@@ -49,7 +49,7 @@ Representative captures from the action-flow panel (uniform step widths vs. dura
 
 OpenScope requires the OpenCode CLI running in HTTP headless mode.
 
-Follow the **[upstream installation guide](https://opencode.ai/download), then verify the installation:
+Follow the [upstream installation guide](https://opencode.ai/download), then verify the installation:
 
 ```bash
 opencode --version
