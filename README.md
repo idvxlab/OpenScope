@@ -1,6 +1,5 @@
-# OpenScope
-
-**OpenScope: Real-Time Visualization for Monitoring and Steering Open Code Harness**
+# VibeTrace: See how your agents think
+**Visualizing Agent Runtime Behavior for Human Intervention in Vibe Coding**
 
 Web dashboard for **[OpenCode](https://opencode.ai/)**. It connects to a local OpenCode HTTP server (REST + Server-Sent Events) so you can work across directories, inspect live message streams, todos, subtasks and **agent action-flow visualization**—with cross-links between todos, transcripts, and individual flow blocks.
 
