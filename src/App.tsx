@@ -335,63 +335,22 @@ function App() {
     [selectedSessionId],
   )
 
-  /** 子任务 Packing View 全屏开关（独立的 dialog 模式） */
+  /** 子任务面板全屏（独立 dialog，便于后续扩展为多栏布局） */
   const [subtaskFullscreenOpen, setSubtaskFullscreenOpen] = useState(false)
-  /** 右侧子任务面板全局布局模式：时间轴 / packing / 汇总面板 */
-  const [subtaskFlowLayoutMode, setSubtaskFlowLayoutMode] = useState<
-    'timeline' | 'packing' | 'summary' | 'sankey'
-  >(
-    'timeline',
-  )
-  /**
-   * 联动选中：
-   *   - kind 'type'   → 高亮整个 actionType 的所有 action（treemap cell + 所有同类 rect）
-   *   - kind 'action' → 仅高亮单个 action（treemap 该 mini-block + 该 rect）
-   * subtaskIndex 之外的子任务全部 dim。
-   */
-  const [selection, setSelection] = useState<
-    | { kind: 'type'; subtaskIndex: number; actionType: string }
-    | { kind: 'action'; subtaskIndex: number; actionKey: string; source: 'treemap' | 'flow' }
-    | null
-  >(null)
-  const handleSelectActionType = useCallback(
-    (subtaskIndex: number, actionType: string | null) => {
-      setSelection((prev) => {
-        if (actionType === null) return null
-        if (
-          prev &&
-          prev.kind === 'type' &&
-          prev.subtaskIndex === subtaskIndex &&
-          prev.actionType === actionType
-        ) {
-          return null
-        }
-        return { kind: 'type', subtaskIndex, actionType }
-      })
-      /** treemap / rect 选中同一子任务 → 同步触发 todo 高亮联动（与点击子任务卡片一致） */
-      if (actionType !== null) setLinkedSubtaskIndex(subtaskIndex)
-    },
-    [],
-  )
-  const handleSelectAction = useCallback(
-    (subtaskIndex: number, actionKey: string | null, source: 'treemap' | 'flow' = 'treemap') => {
-      setSelection((prev) => {
-        if (actionKey === null) return null
-        if (
-          prev &&
-          prev.kind === 'action' &&
-          prev.subtaskIndex === subtaskIndex &&
-          prev.actionKey === actionKey &&
-          prev.source === source
-        ) {
-          return null
-        }
-        return { kind: 'action', subtaskIndex, actionKey, source }
-      })
-      if (actionKey !== null) setLinkedSubtaskIndex(subtaskIndex)
-    },
-    [],
-  )
+  /** 右侧子任务面板全局布局模式：时间轴 / 汇总 */
+  const [subtaskFlowLayoutMode, setSubtaskFlowLayoutMode] = useState<'timeline' | 'summary'>('timeline')
+  /** ActionFlow rect 点击：单 action 高亮（再次点击同一 rect 取消） */
+  const [selection, setSelection] = useState<{ subtaskIndex: number; actionKey: string } | null>(null)
+  const handleSelectAction = useCallback((subtaskIndex: number, actionKey: string | null) => {
+    setSelection((prev) => {
+      if (actionKey === null) return null
+      if (prev && prev.subtaskIndex === subtaskIndex && prev.actionKey === actionKey) {
+        return null
+      }
+      return { subtaskIndex, actionKey }
+    })
+    if (actionKey !== null) setLinkedSubtaskIndex(subtaskIndex)
+  }, [])
 
   // Load sessions on mount
   useEffect(() => {
@@ -1127,6 +1086,7 @@ function App() {
         width: '100vw',
         overflow: 'hidden',
         background: '#F8F8F8',
+        position: 'relative',
       }}
     >
       {/* 左侧：文件夹窄栏 + 会话列表 */}
@@ -1270,37 +1230,6 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSubtaskFlowLayoutMode('packing')}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    background: 'none',
-                    border: 'none',
-                    cursor: 'pointer',
-                    padding: 0,
-                    fontSize: 11,
-                    lineHeight: '16px',
-                    color: subtaskFlowLayoutMode === 'packing' ? '#2B2B2B' : '#A3A3A3',
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: 3,
-                      boxSizing: 'border-box',
-                      background: subtaskFlowLayoutMode === 'packing' ? '#C6C6C6' : 'transparent',
-                      border:
-                        subtaskFlowLayoutMode === 'packing'
-                          ? '1px solid #8A8A8A'
-                          : '1px solid #C6C6C6',
-                    }}
-                  />
-                  packing
-                </button>
-                <button
-                  type="button"
                   onClick={() => setSubtaskFlowLayoutMode('summary')}
                   style={{
                     display: 'flex',
@@ -1330,45 +1259,14 @@ function App() {
                   />
                   summary
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setSubtaskFlowLayoutMode('sankey')}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    background: 'none',
-                    border: 'none',
-                    cursor: 'pointer',
-                    padding: 0,
-                    fontSize: 11,
-                    lineHeight: '16px',
-                    color: subtaskFlowLayoutMode === 'sankey' ? '#2B2B2B' : '#A3A3A3',
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: 3,
-                      boxSizing: 'border-box',
-                      background: subtaskFlowLayoutMode === 'sankey' ? '#C6C6C6' : 'transparent',
-                      border:
-                        subtaskFlowLayoutMode === 'sankey'
-                          ? '1px solid #8A8A8A'
-                          : '1px solid #C6C6C6',
-                    }}
-                  />
-                  sankey
-                </button>
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <button
                 type="button"
                 onClick={() => setSubtaskFullscreenOpen(true)}
-                aria-label="全屏 Packing View"
-                title="全屏 Packing View"
+                aria-label="全屏子任务面板"
+                title="全屏子任务面板"
                 disabled={visibleSubtasks.length === 0}
                 style={{
                   width: 26,
@@ -1421,7 +1319,6 @@ function App() {
               forkPanelSnapshotBundle={forkPanelSnapshotBundle}
               flowLayoutMode={subtaskFlowLayoutMode}
               selection={selection}
-              onSelectActionType={handleSelectActionType}
               onSelectAction={handleSelectAction}
             />
           </div>
@@ -1458,6 +1355,9 @@ function App() {
           onAnalyzeFromAction={handleAnalyzeFromAction}
           sessionDirectory={activeSessionDirectory}
           forkPanelSnapshotBundle={forkPanelSnapshotBundle}
+          flowLayoutMode={subtaskFlowLayoutMode}
+          selection={selection}
+          onSelectAction={handleSelectAction}
         />
       </div>
     </div>

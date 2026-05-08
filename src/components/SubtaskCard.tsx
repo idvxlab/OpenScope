@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { MappedAction, OcMessage } from '../types/opencode'
 import type { AssistantSubtask } from '../utils/subtaskGrouping'
 import { buildSubtaskCardMetrics, formatDurationMs, formatSubtaskCostDisplay } from '../utils/subtaskMetrics'
@@ -15,7 +15,6 @@ import {
 import type { ForkFromActionContext, ForkPanelSnapshotBundle } from '../utils/forkPanelSnapshot'
 import { mergeMessagesForActionTooltipLookup } from '../utils/actionTooltipMapping'
 import ActionFlowVisualization from './ActionFlowVisualization'
-import SubtaskActionTypeTreemap from './SubtaskActionTypeTreemap'
 import {
   type ActionTypePaletteId,
 } from '../styles/actionTypePalettes'
@@ -43,27 +42,14 @@ interface SubtaskCardProps {
   sessionDirectory?: string
   /** Forked session: local read-only snapshot for comparison (not in model context) */
   forkPanelSnapshotBundle?: ForkPanelSnapshotBundle | null
-  /**
-   * 全屏 packing view 模式：传入正数则在卡片左侧前置一个方形 action-type treemap，
-   * 颜色与右侧 ActionFlow 内每个 block 1:1 一致（共享 colorBy / durationMode 状态）。
-   */
-  leadingTreemapSize?: number
-  /** 当前选中的 actionType（来自 App 的联动状态）；同 type 在 ActionFlow 加亮，其他暗化 */
+  /** 当前选中的 actionType；同 type 在 ActionFlow 加亮（预留，当前无入口） */
   selectedActionType?: string | null
   /** 当前选中的单个 action key；优先级高于 selectedActionType */
   selectedActionKey?: string | null
-  /** 仅用于 ActionFlow 的 action-level 筛选（区分 treemap 点击与普通点击） */
-  flowHighlightedActionKey?: string | null
   /** 选中位于其他子任务卡片时，本卡所有 action 应整体 dim */
   otherSubtaskHasSelection?: boolean
-  /** treemap cell 点击：传 null 取消选中 */
-  onSelectActionType?: (actionType: string | null) => void
-  /** treemap mini-block 或 ActionFlow rect 单击：传 null 取消选中 */
-  onSelectAction?: (actionKey: string | null) => void
-  /** ActionFlow rect 单击：仅同步 treemap 选中，不触发 flow 筛选 */
+  /** ActionFlow rect 单击 */
   onSelectActionFromFlow?: (actionKey: string | null) => void
-  /** 由父级统一控制：timeline / packing */
-  flowLayoutMode?: 'timeline' | 'packing'
   /** 全局共享颜色模式（由上层子任务面板控制） */
   colorBy: ColorByMode
   onColorByChange: (mode: ColorByMode) => void
@@ -134,15 +120,10 @@ export default function SubtaskCard({
   onAnalyzeFromAction,
   sessionDirectory,
   forkPanelSnapshotBundle = null,
-  leadingTreemapSize,
   selectedActionType = null,
   selectedActionKey = null,
-  flowHighlightedActionKey = null,
   otherSubtaskHasSelection = false,
-  onSelectActionType,
-  onSelectAction,
   onSelectActionFromFlow,
-  flowLayoutMode = 'timeline',
   colorBy,
   onColorByChange,
   actionTypePaletteId,
@@ -451,7 +432,6 @@ export default function SubtaskCard({
   const changesLabel = String(m.mutatedFileCount)
   /** 无进行中 action 时才显示流程终点黄点（避免子任务一开始就出现「收尾」） */
   const showFlowEndNode = !hasActiveRunningAction && flowActions.length > 0
-  const showLeadingTreemap = typeof leadingTreemapSize === 'number' && leadingTreemapSize > 0
 
   /**
    * 稳化 flowEndSummary 引用 —— inline 字面量每次 render 都是新对象，会让
@@ -825,14 +805,13 @@ export default function SubtaskCard({
               tokenHighlightMin={tokenHighlightForFlow}
               tooltipMessages={renderTooltips}
               highlightedActionType={selectedActionType}
-              highlightedActionKey={flowHighlightedActionKey}
+              highlightedActionKey={selectedActionKey}
               dimAll={otherSubtaskHasSelection}
               onSelectAction={onSelectActionFromFlow}
               forkAnchorActionKey={forkAnchor}
-              layoutMode={flowLayoutMode}
               onForkFromAction={handleForkFromActionWrapped}
               onAnalyzeFromAction={onAnalyzeFromAction}
-              showFlowEndNode={flowLayoutMode === 'timeline' ? showFlowEndNode : false}
+              showFlowEndNode={showFlowEndNode}
               flowEndSummary={flowEndSummary}
             />
           )
@@ -859,8 +838,7 @@ export default function SubtaskCard({
     </>
   )
 
-  /** 卡片本体样式（不含 treemap），leading 与 non-leading 共用 */
-  const cardInnerStyle: React.CSSProperties = {
+  const cardInnerStyle: CSSProperties = {
     boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
@@ -886,64 +864,14 @@ export default function SubtaskCard({
       : 'none',
   }
 
-  if (!showLeadingTreemap) {
-    return (
-      <div
-        ref={cardRef}
-        data-subtask-card-index={cardIndex ?? displayIndex}
-        onClick={() => onSelectSubtask?.()}
-        style={{ ...cardInnerStyle, marginBottom: 8 }}
-      >
-        {bodyContent}
-      </div>
-    )
-  }
-
-  /** Leading 模式：treemap 是 card 的 sibling，跟卡片 y 轴居中对齐，挂在 card 框外 */
-  const treemapSide = leadingTreemapSize as number
   return (
     <div
       ref={cardRef}
       data-subtask-card-index={cardIndex ?? displayIndex}
-      style={{
-        boxSizing: 'border-box',
-        display: 'flex',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 14,
-        marginBottom: 8,
-        width: '100%',
-      }}
+      onClick={() => onSelectSubtask?.()}
+      style={{ ...cardInnerStyle, marginBottom: 8 }}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: treemapSide,
-          height: treemapSide,
-          flexShrink: 0,
-          alignSelf: 'center',
-        }}
-      >
-        <SubtaskActionTypeTreemap
-          actions={forkMergedFlow?.sessionActions ?? flowActions}
-          colorMode={colorBy}
-          actionTypePaletteId={actionTypePaletteId}
-          width={treemapSide}
-          height={treemapSide}
-          tooltipMessages={forkMergedFlow?.mergedTooltips ?? tooltipLookupMessages}
-          selectedType={selectedActionType}
-          selectedActionKey={selectedActionKey}
-          dimAll={otherSubtaskHasSelection}
-          onSelectType={onSelectActionType}
-          onSelectAction={onSelectAction}
-        />
-      </div>
-      <div
-        onClick={() => onSelectSubtask?.()}
-        style={{ ...cardInnerStyle, flex: 1, minWidth: 0 }}
-      >
-        {bodyContent}
-      </div>
+      {bodyContent}
     </div>
   )
 }

@@ -19,6 +19,7 @@ export const ACTION_TYPE_ORDER: readonly ActionType[] = [
 ] as const
 
 export type ActionTypePaletteId =
+  | 'pastelPaired7'
   | 'contrast'
   | 'spectrum'
   | 'd3PairedVivid7'
@@ -29,6 +30,7 @@ export type ActionTypePaletteId =
   | 'customUserA'
 
 export const ACTION_TYPE_PALETTE_LABELS: Record<ActionTypePaletteId, string> = {
+  pastelPaired7: 'Pastel 7（底色 + icon 配对）',
   contrast: '高对比 · 手工',
   spectrum: '色谱 · 手工（含柔和黄/玫红）',
   d3PairedVivid7: 'd3 · schemePaired（亮色7分组）',
@@ -40,6 +42,57 @@ export const ACTION_TYPE_PALETTE_LABELS: Record<ActionTypePaletteId, string> = {
 }
 
 export type ActionTypeTriad = { fill: string; stroke: string; accent: string }
+
+/**
+ * Pastel 7：底色与 icon 色 **直接使用下方常量字符串**，不经过 d3、透明度或 triadFromD3 变换。
+ * stroke / accent 均等于 icon 色（ActionFlow 方块描边与 icon 同色）。
+ *
+ * 分组与旧版 `PAIRED_VIVID_7` / 「亮色 7 分组」一致（同类 action 共用一组颜色）：
+ * | 组索引 | action types |
+ * |--------|----------------|
+ * | 0 | Think, Plan |
+ * | 1 | Clarify, Permission |
+ * | 2 | Read, Shell, Search |
+ * | 3 | Write, Response |
+ * | 4 | Skill |
+ * | 5 | Subagent |
+ * | 6 | Compaction |
+ * UserRequest 单独：白底 + 中性灰 icon（不参与 Pastel 7）。
+ */
+const PASTEL7_FILL = ['#b3e2cd', '#fdcdac', '#cbd5e8', '#f4cae4', '#e6f5c9', '#fff2ae', '#f1e2cc'] as const
+const PASTEL7_ICON = ['#66c2a5', '#fc8d62', '#8da0cb', '#e78ac3', '#a6d854', '#ffd92f', '#e5c494'] as const
+
+/** 每组索引 0..6，UserRequest 用 -1 表示单独着色 */
+const PASTEL7_GROUP_INDEX: Record<ActionType, number> = {
+  UserRequest: -1,
+  Think: 0,
+  Plan: 0,
+  Clarify: 1,
+  Permission: 1,
+  Read: 2,
+  Shell: 2,
+  Search: 2,
+  Write: 3,
+  Response: 3,
+  Skill: 4,
+  Subagent: 5,
+  Compaction: 6,
+}
+
+function buildPastelPaired7(): Record<ActionType, ActionTypeTriad> {
+  const out = {} as Record<ActionType, ActionTypeTriad>
+  for (const t of ACTION_TYPE_ORDER) {
+    const g = PASTEL7_GROUP_INDEX[t]
+    if (g < 0) {
+      out[t] = { fill: '#FFFFFF', stroke: '#3D4F63', accent: '#3D4F63' }
+      continue
+    }
+    const fill = PASTEL7_FILL[g]!
+    const icon = PASTEL7_ICON[g]!
+    out[t] = { fill, stroke: icon, accent: icon }
+  }
+  return out
+}
 
 /** 高对比手工盘：描边更深，块之间更易区分 */
 const CONTRAST: Record<ActionType, ActionTypeTriad> = {
@@ -225,6 +278,7 @@ function buildD3Observable(vivid: boolean): Record<ActionType, ActionTypeTriad> 
 }
 
 const PALETTES: Record<ActionTypePaletteId, Record<ActionType, ActionTypeTriad>> = {
+  pastelPaired7: buildPastelPaired7(),
   contrast: CONTRAST,
   spectrum: SPECTRUM,
   d3PairedVivid7: buildD3PairedVivid7(),
@@ -276,4 +330,4 @@ export function getActionTypePaletteRecord(
   return PALETTES[paletteId]
 }
 
-export const DEFAULT_ACTION_TYPE_PALETTE_ID: ActionTypePaletteId = 'd3PairedVivid7'
+export const DEFAULT_ACTION_TYPE_PALETTE_ID: ActionTypePaletteId = 'pastelPaired7'

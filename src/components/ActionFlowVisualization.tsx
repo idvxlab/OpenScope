@@ -28,11 +28,7 @@ type FlowLayoutItem = {
   cy: number
 }
 
-type FlowLayoutMode = 'timeline' | 'packing'
-
 const MARGIN_LEFT = 24
-const PACKING_MARGIN_LEFT = 8
-const PACKING_MARGIN_RIGHT = 8
 const GAP = 12
 /**
  * 垂直布局（与 `actionMapping` 一致）：
@@ -301,17 +297,8 @@ function computeLayout(
   layoutOpts?: {
     includeEndNode?: boolean
     forkAnchorActionKey?: string | null
-    layoutMode?: FlowLayoutMode
-    packingFitWidthPx?: number | null
   }
 ) {
-  const layoutMode = layoutOpts?.layoutMode ?? 'timeline'
-  if (layoutMode === 'packing') {
-    return computePackingLayout(actions, durationMode, {
-      forkAnchorActionKey: layoutOpts?.forkAnchorActionKey ?? null,
-      fitWidthPx: layoutOpts?.packingFitWidthPx ?? null,
-    })
-  }
   const includeEndNode = layoutOpts?.includeEndNode !== false
   const forkAnchorActionKey = layoutOpts?.forkAnchorActionKey ?? null
   const sorted = [...actions].sort((a, b) => a.sortTime - b.sortTime)
@@ -960,198 +947,6 @@ function computeLayout(
   return { layout, totalW, totalH }
 }
 
-/**
- * Packing 布局的 session 分组键。
- * - 父侧 Subagent task 条目（source !== 'child-session'）归入对应子 session 行（作为该行首块）
- * - 子 session 内部 action 归入同一行
- * - fork 新分支单独一行
- * - 其余归 session:main
- */
-function packingSessionKey(a: MappedAction & { row: number }): string {
-  if (a.actionType === 'Subagent' && a.source !== 'child-session' && a.callID) {
-    return `session:task:${a.callID}`
-  }
-  if (a.source === 'child-session' && a.parentTaskCallID) {
-    return `session:task:${a.parentTaskCallID}`
-  }
-  if (a.forkCompareRow === 2) {
-    return 'session:fork-new-branch'
-  }
-  return 'session:main'
-}
-
-function computePackingLayout(
-  actions: (MappedAction & { row: number })[],
-  durationMode: boolean,
-  opts?: { forkAnchorActionKey?: string | null; fitWidthPx?: number | null }
-) {
-  const { forkAnchorActionKey = null, fitWidthPx = null } = opts ?? {}
-  const marginLeft = PACKING_MARGIN_LEFT
-  const marginRight = PACKING_MARGIN_RIGHT
-  const sorted = [...actions].sort((a, b) => a.sortTime - b.sortTime)
-  const rowPitch = BLOCK_H
-
-  if (sorted.length === 0) {
-    return { layout: [] as FlowLayoutItem[], totalW: 360, totalH: TOP_PAD + rowPitch + BOTTOM_PAD }
-  }
-
-  /** Subagent task 入口固定用 MIN_W（紧凑前缀，不编码实际时长） */
-  const widthOf = (a: MappedAction & { row: number }): number =>
-    a.actionType === 'Subagent' && a.source !== 'child-session' && Boolean(a.callID)
-      ? MIN_W
-      : blockWidth(durationMode, a.durationMs)
-
-  // --- 按 session 分组（新 key：Subagent → 子 session） ---
-  const sessionActions = new Map<string, (MappedAction & { row: number })[]>()
-  for (const a of sorted) {
-    const key = packingSessionKey(a)
-    let list = sessionActions.get(key)
-    if (!list) { list = []; sessionActions.set(key, list) }
-    list.push(a)
-  }
-
-  // --- session 行顺序：main → 子 sessions（按触发时间）→ fork ---
-  const childSessionKeys = [...sessionActions.keys()]
-    .filter(s => s !== 'session:main' && s !== 'session:fork-new-branch')
-    .sort((a, b) => {
-      const ta = sessionActions.get(a)![0]!.sortTime
-      const tb = sessionActions.get(b)![0]!.sortTime
-      return ta !== tb ? ta - tb : a.localeCompare(b)
-    })
-  const sessionOrder: string[] = []
-  if (sessionActions.has('session:main')) sessionOrder.push('session:main')
-  sessionOrder.push(...childSessionKeys)
-  if (sessionActions.has('session:fork-new-branch')) sessionOrder.push('session:fork-new-branch')
-  if (sessionOrder.length === 0) sessionOrder.push('session:main')
-
-  // --- 预计算各子 session 的总宽度（各自独立游标，并行 session 互不影响） ---
-  const childSessionTotalW = new Map<string, number>()
-  for (const key of childSessionKeys) {
-    const acts = sessionActions.get(key)!
-    childSessionTotalW.set(key, acts.reduce((s, a) => s + widthOf(a), 0))
-  }
-
-  // --- x 轴布局：主 session 游标 + 子 session 触发预留空间 ---
-  //
-  // 主时间轴事件 = 主 session action + Subagent 触发事件（按 sortTime 混合排序）。
-  // 遇到 Subagent 触发：
-  //   · 并行触发（相同 parallelGroupId）共享同一 x 起点，主游标推进 max(并行宽度)。
-  //   · 串行触发各自推进。
-  // 遇到主 session action：直接放置，推进游标。
-  const subagentEvents = sorted.filter(
-    a => a.actionType === 'Subagent' && a.source !== 'child-session' && Boolean(a.callID)
-  )
-  const mainTimeline = [
-    ...(sessionActions.get('session:main') ?? []),
-    ...subagentEvents,
-  ].sort((a, b) => a.sortTime - b.sortTime)
-
-  const actionX = new Map<MappedAction & { row: number }, number>()
-  const childSessionStartX = new Map<string, number>()
-  const processedParallelGroups = new Set<string>()
-  let mainCursor = marginLeft
-
-  for (const event of mainTimeline) {
-    if (event.actionType === 'Subagent' && event.source !== 'child-session' && event.callID) {
-      // 找出所有并行兄弟（相同 parallelGroupId），整组共享同一 x 起点
-      const gid = event.parallelGroupId
-      if (gid && processedParallelGroups.has(gid)) continue  // 已作为并行组的一部分处理过
-
-      const siblings = gid
-        ? subagentEvents.filter(a => a.parallelGroupId === gid)
-        : [event]
-      if (gid) processedParallelGroups.add(gid)
-
-      const startX = mainCursor
-      let maxChildW = 0
-      for (const sub of siblings) {
-        const childKey = `session:task:${sub.callID!}`
-        childSessionStartX.set(childKey, startX)
-        maxChildW = Math.max(maxChildW, childSessionTotalW.get(childKey) ?? MIN_W)
-      }
-      // 主游标越过最宽的并行子 session（并行 session 各自占用该 x 区间但互不干扰）
-      mainCursor += maxChildW
-    } else {
-      actionX.set(event, mainCursor)
-      mainCursor += widthOf(event)
-    }
-  }
-
-  let maxRight = mainCursor
-
-  // --- 各子 session 独立游标，从各自 startX 出发 ---
-  for (const key of childSessionKeys) {
-    const acts = sessionActions.get(key)!
-    let cursor = childSessionStartX.get(key) ?? mainCursor
-    for (const a of acts) {
-      actionX.set(a, cursor)
-      cursor += widthOf(a)
-    }
-    maxRight = Math.max(maxRight, cursor)
-  }
-
-  // --- fork 新分支（从 forkAnchorActionKey 右侧起，或主游标末端）---
-  const forkActs = sessionActions.get('session:fork-new-branch') ?? []
-  if (forkActs.length > 0) {
-    let forkStart = mainCursor
-    if (forkAnchorActionKey) {
-      for (const [a, x] of actionX) {
-        if (actionKey(a) === forkAnchorActionKey) {
-          forkStart = x + widthOf(a)
-          break
-        }
-      }
-    }
-    let cursor = forkStart
-    for (const a of forkActs) {
-      actionX.set(a, cursor)
-      cursor += widthOf(a)
-    }
-    maxRight = Math.max(maxRight, cursor)
-  }
-
-  // --- y 位置（固定行高，按 session 行顺序） ---
-  const sessionTopY = new Map<string, number>()
-  for (let i = 0; i < sessionOrder.length; i++) {
-    sessionTopY.set(sessionOrder[i]!, TOP_PAD + i * rowPitch)
-  }
-
-  // --- 生成 layout 条目 ---
-  const layout: FlowLayoutItem[] = []
-  for (const [key, acts] of sessionActions) {
-    const y = sessionTopY.get(key) ?? TOP_PAD
-    for (const a of acts) {
-      const x = actionX.get(a) ?? marginLeft
-      const w = widthOf(a)
-      const h = BLOCK_H
-      layout.push({ node: { ...a, kind: 'action' as const }, x, y, w, h, cx: x + w / 2, cy: y + h / 2 })
-    }
-  }
-
-  // --- fit-to-width 缩放（只压 x/w，行高保持固定） ---
-  let totalW = Math.max(maxRight + marginRight, 220)
-  if (fitWidthPx != null && Number.isFinite(fitWidthPx) && fitWidthPx > 0) {
-    const targetTotalW = Math.max(220, fitWidthPx)
-    const naturalSpan = Math.max(1, maxRight - marginLeft)
-    const availableSpan = Math.max(1, targetTotalW - marginLeft - marginRight)
-    const scale = Math.min(1, availableSpan / naturalSpan)
-    if (scale < 1) {
-      for (const item of layout) {
-        item.x = marginLeft + (item.x - marginLeft) * scale
-        item.w = Math.max(2, item.w * scale)
-        item.cx = item.x + item.w / 2
-      }
-      totalW = targetTotalW
-    } else {
-      totalW = Math.min(totalW, targetTotalW)
-    }
-  }
-
-  const maxBottom = layout.reduce((m, it) => Math.max(m, it.y + it.h), TOP_PAD)
-  const totalH = Math.max(maxBottom + BOTTOM_PAD, TOP_PAD + rowPitch + BOTTOM_PAD)
-  return { layout, totalW, totalH }
-}
-
 function parallelSiblingSkip(pa: MappedAction, pb: MappedAction): boolean {
   if (!pa.parallelGroupId || !pb.parallelGroupId) return false
   if (pa.parallelGroupId !== pb.parallelGroupId) return false
@@ -1401,12 +1196,10 @@ interface Props {
    * 为 true 时用 CSS 隐藏滚动条（仍可用滚轮滚动）。默认 false，保留系统滚动条以便可见溢出。
    */
   hideScrollbar?: boolean
-  /**
-   * 与左侧 treemap 联动：type-level 选中。匹配的 action group 保持原样，其他 group dim。
-   */
+  /** type-level 选中：匹配的 action group 保持原样，其他 group dim。 */
   highlightedActionType?: string | null
   /**
-   * 与左侧 treemap 联动：action-level 选中（单个 action 的 actionKey）。
+   * action-level 选中（单个 action 的 actionKey）。
    * 优先级高于 highlightedActionType；命中时仅该 action 高亮，其他暗化。
    */
   highlightedActionKey?: string | null
@@ -1420,8 +1213,6 @@ interface Props {
    * 并在锚点 → 第一条新分支动作之间绘制专门的「下沉」分叉边。
    */
   forkAnchorActionKey?: string | null
-  /** 布局模式：timeline 为原始时序视图，packing 为紧凑堆叠视图。 */
-  layoutMode?: FlowLayoutMode
   /** colorMode='type' 时使用的调色盘 */
   actionTypePaletteId?: ActionTypePaletteId
 }
@@ -1447,15 +1238,10 @@ export default function ActionFlowVisualization({
   dimAll = false,
   onSelectAction,
   forkAnchorActionKey = null,
-  layoutMode = 'timeline',
   actionTypePaletteId = DEFAULT_ACTION_TYPE_PALETTE_ID,
 }: Props) {
-  const isPackingLayout = layoutMode === 'packing'
-  /** packing 模式强制使用 type 色：颜色编码动作类型，比状态色在紧凑视图下更易读 */
-  const effectiveColorMode: 'status' | 'tokens' | 'type' = isPackingLayout ? 'type' : colorMode
   const svgRef = useRef<SVGSVGElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const [packingFitWidthPx, setPackingFitWidthPx] = useState<number | null>(null)
   const [contextMenu, setContextMenu] = useState<ActionFlowContextMenuState | null>(null)
   const reactId = useId().replace(/:/g, '')
   const markerId = `action-flow-arrow-${reactId}`
@@ -1479,51 +1265,11 @@ export default function ActionFlowVisualization({
   const layoutEstimate = useMemo(
     () =>
       computeLayout(actions, durationMode, {
-        includeEndNode: showFlowEndNode && !isPackingLayout,
-        forkAnchorActionKey,
-        layoutMode,
-        packingFitWidthPx: isPackingLayout ? packingFitWidthPx : null,
-      }),
-    [
-      actions,
-      durationMode,
-      showFlowEndNode,
-      forkAnchorActionKey,
-      layoutMode,
-      isPackingLayout,
-      packingFitWidthPx,
-    ]
-  )
-  /**
-   * 维持容器高度稳定：packing 仅压缩内部内容，不改变 ActionFlow 可视区域高度。
-   * 基线高度取同一数据在 timeline 模式下的估算值，避免下方 MetricBox 行上移。
-   */
-  const timelineLayoutEstimate = useMemo(
-    () =>
-      computeLayout(actions, durationMode, {
         includeEndNode: showFlowEndNode,
         forkAnchorActionKey,
-        layoutMode: 'timeline',
       }),
     [actions, durationMode, showFlowEndNode, forkAnchorActionKey]
   )
-
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el || !isPackingLayout) {
-      setPackingFitWidthPx(null)
-      return
-    }
-    const update = () => {
-      const next = Math.max(220, Math.floor(el.clientWidth))
-      setPackingFitWidthPx(prev => (prev === next ? prev : next))
-    }
-    update()
-    if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => update())
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [isPackingLayout])
 
   useLayoutEffect(() => {
     const svg = svgRef.current
@@ -1535,10 +1281,8 @@ export default function ActionFlowVisualization({
     const colorScale = d3.scaleSequential(d3.interpolateBlues).domain([0, maxTok])
 
     const { layout, totalW, totalH } = computeLayout(actions, durationMode, {
-      includeEndNode: showFlowEndNode && !isPackingLayout,
+      includeEndNode: showFlowEndNode,
       forkAnchorActionKey,
-      layoutMode,
-      packingFitWidthPx: isPackingLayout ? packingFitWidthPx : null,
     })
     /** 是否处于 fork 对比模式：layout 中存在任意「新分支」动作（含新分支里的 task / 子 session）。
      *  注意不能用 actionSessionKey===session:fork-new-branch 判断 —— 新分支 Subagent 的
@@ -1610,9 +1354,8 @@ export default function ActionFlowVisualization({
     /** 并行 fan-out 由 `appendOrthoFanOut` 统一画，跳过 main sequential loop 的重复边 */
     const parallelFanOutSkip = new Set<string>()
 
-    if (!isPackingLayout) {
-      /** 并行组：lane 内连线、前驱→各 lane 首、各 lane 末→后继（多源汇入同一 bundleX） */
-      const groupIdToIndices = new Map<string, number[]>()
+    /** 并行组：lane 内连线、前驱→各 lane 首、各 lane 末→后继（多源汇入同一 bundleX） */
+    const groupIdToIndices = new Map<string, number[]>()
       for (let i = 0; i < layout.length; i++) {
         const item = layout[i]!
         if (item.node.kind !== 'action') continue
@@ -1940,9 +1683,8 @@ export default function ActionFlowVisualization({
         )
       }
     }
-      connectPostAnchorTrack((a) => a.forkGhost === true)
-      connectPostAnchorTrack(isNewBranchAction)
-    }
+    connectPostAnchorTrack((a) => a.forkGhost === true)
+    connectPostAnchorTrack(isNewBranchAction)
 
     layout.forEach((item, layoutIndex) => {
       const { node, x: nx, y: ny, w, h } = item
@@ -1984,7 +1726,7 @@ export default function ActionFlowVisualization({
       const sc = effectiveStatusColors(act.status, act.durationMs)
       const { fill, iconFill } = resolveActionBlockColors(
         act,
-        effectiveColorMode,
+        colorMode,
         colorScale,
         actionTypePaletteId,
       )
@@ -2054,14 +1796,14 @@ export default function ActionFlowVisualization({
         !isGhost &&
         !isUserRequest &&
         (act.status === 'running' || act.status === 'pending') &&
-        effectiveColorMode === 'status'
+        colorMode === 'status'
       ) {
         actionTarget.attr('class', sc.isLongRunning ? 'action-flow-running-long' : 'action-flow-running')
       }
 
       const actionGNode = actionG.node() as SVGGElement | null
-      const iconBox = isPackingLayout ? Math.max(6, Math.min(16, Math.min(w, h) - 4)) : 16
-      const canShowIcon = !isUserRequest && (!isPackingLayout || w >= MIN_W)
+      const iconBox = 16
+      const canShowIcon = !isUserRequest
       if (actionGNode && canShowIcon) {
         appendActionFlowIcon(
           actionGNode,
@@ -2074,7 +1816,7 @@ export default function ActionFlowVisualization({
         )
       }
       /** Duration mode: 块够宽时在左上角显示实际时长（替代旧的 >60s 阈值徽标） */
-      if (durationMode && !isGhost && !isPackingLayout && w >= 52 && act.durationMs > 0) {
+      if (durationMode && !isGhost && w >= 52 && act.durationMs > 0) {
         actionG
           .append('text')
           .attr('x', nx + 6)
@@ -2090,9 +1832,8 @@ export default function ActionFlowVisualization({
       /** 需求：任何情况下都不显示右上角三个点操作按钮 */
     })
 
-    if (!isPackingLayout) {
-      /**
-       * 显式「收尾」连线：每个 end 节点 ← 本支线最右一条 action（按 x+w 取最右）。
+    /**
+     * 显式「收尾」连线：每个 end 节点 ← 本支线最右一条 action（按 x+w 取最右）。
        *  - 普通模式：唯一 main end ← 主会话最右 action。
        *  - Fork 对比：
        *      ghost end (sessionRegion='main') ← 历史最右 action（包括历史 task 子 session 末端）；
@@ -2375,7 +2116,6 @@ export default function ActionFlowVisualization({
           .attr('pointer-events', 'none')
         }
       }
-    }
 
     /** 边线先画、rect 后画时 rect 会压住 path；全部画完后把连线抬到最上层，避免「action 盖住线」 */
     content.selectAll<SVGPathElement, unknown>('path.afv-edge').raise()
@@ -2402,7 +2142,7 @@ export default function ActionFlowVisualization({
   }, [
     actions,
     durationMode,
-    effectiveColorMode,
+    colorMode,
     actionTypePaletteId,
     durationHighlightMinMs,
     tokenHighlightMin,
@@ -2418,9 +2158,6 @@ export default function ActionFlowVisualization({
     embedded,
     viewportMaxHeight,
     forkAnchorActionKey,
-    layoutMode,
-    isPackingLayout,
-    packingFitWidthPx,
   ])
 
   /**
@@ -2507,7 +2244,6 @@ export default function ActionFlowVisualization({
 
   const mockOffset = mockBranchForkActionIndex !== undefined ? ROW_H : 0
   const contentHeight = layoutEstimate.totalH + mockOffset
-  const timelineContentHeight = timelineLayoutEstimate.totalH + mockOffset
   /** 可视区域下限至少能容纳两行泳道，避免高度塌缩；上限仍限制最大可视高度，超出则内部滚动 */
   const minContentHeight = MIN_SVG_CONTENT_HEIGHT
   const maxVisibleHeight = Math.max(
@@ -2515,11 +2251,7 @@ export default function ActionFlowVisualization({
     minContentHeight
   )
   const normalViewportHeight = Math.min(Math.max(contentHeight, minContentHeight), maxVisibleHeight)
-  const stablePackingViewportHeight = Math.min(
-    Math.max(timelineContentHeight, minContentHeight),
-    maxVisibleHeight
-  )
-  let viewportHeight = isPackingLayout ? stablePackingViewportHeight : normalViewportHeight
+  let viewportHeight = normalViewportHeight
   if (typeof viewportMaxHeight === 'number' && Number.isFinite(viewportMaxHeight) && viewportMaxHeight > 0) {
     viewportHeight = Math.min(viewportHeight, viewportMaxHeight)
   }
@@ -2533,23 +2265,13 @@ export default function ActionFlowVisualization({
       onClick={() => onSelectAction?.(null)}
       style={{
         boxSizing: 'border-box',
-        overflowX: isPackingLayout ? 'hidden' : 'auto',
+        overflowX: 'auto',
         overflowY: 'auto',
         width: '100%',
         flexShrink: 0,
-        /** packing：固定容器高度并垂直居中 SVG；timeline：跟随内容高度，限制最大高度 */
-        ...(isPackingLayout
-          ? {
-              height: stablePackingViewportHeight,
-              display: 'flex',
-              flexDirection: 'column' as const,
-              justifyContent: 'center',
-            }
-          : {
-              height: 'auto',
-              maxHeight: scrollAreaMaxHeight,
-              minHeight: 0,
-            }),
+        height: 'auto',
+        maxHeight: scrollAreaMaxHeight,
+        minHeight: 0,
       }}
       ref={scrollRef}
     >

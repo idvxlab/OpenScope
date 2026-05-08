@@ -1,7 +1,5 @@
 import { Fragment, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
-import { sankey as d3Sankey } from 'd3-sankey'
-import type { SankeyLink, SankeyNode } from 'd3-sankey'
-import type { ActionType, MappedAction, OcMessage } from '../types/opencode'
+import type { MappedAction, OcMessage } from '../types/opencode'
 import type { AssistantSubtask } from '../utils/subtaskGrouping'
 import type { ForkFromActionContext, ForkPanelSnapshotBundle } from '../utils/forkPanelSnapshot'
 import SubtaskCard from './SubtaskCard'
@@ -26,72 +24,13 @@ interface SubtaskDebugPanelProps {
   sessionDirectory?: string
   /** Fork 后新 session：本地保存的 fork 前子任务面板可视化快照 */
   forkPanelSnapshotBundle?: ForkPanelSnapshotBundle | null
-  /** 全屏 packing view：>0 时每张子任务卡左侧前置一个 actionType treemap */
-  leadingTreemapSize?: number
-  /** 联动选中：type 级 / action 级 / 无 */
-  selection?:
-    | { kind: 'type'; subtaskIndex: number; actionType: string }
-    | { kind: 'action'; subtaskIndex: number; actionKey: string; source: 'treemap' | 'flow' }
-    | null
-  /** treemap cell 点击回调；传入 null 取消选中 */
-  onSelectActionType?: (subtaskIndex: number, actionType: string | null) => void
-  /** treemap mini-block 或 ActionFlow rect 单击 → action-level 选中 */
-  onSelectAction?: (
-    subtaskIndex: number,
-    actionKey: string | null,
-    source?: 'treemap' | 'flow',
-  ) => void
+  /** ActionFlow rect 点击联动 */
+  selection?: { subtaskIndex: number; actionKey: string } | null
+  /** ActionFlow rect 单击 → action-level 选中 */
+  onSelectAction?: (subtaskIndex: number, actionKey: string | null) => void
   /** 全局布局模式（由子任务面板头部统一切换） */
-  flowLayoutMode?: 'timeline' | 'packing' | 'summary' | 'sankey'
+  flowLayoutMode?: 'timeline' | 'summary'
 }
-
-type SankeyRawNode = {
-  id: string
-  step: number
-  actionType: ActionType
-}
-
-type SankeyRawLink = {
-  source: string
-  target: string
-  value: number
-}
-
-type SankeyNodeEx = SankeyNode<SankeyRawNode, SankeyRawLink> & SankeyRawNode
-type SankeyLinkEx = SankeyLink<SankeyRawNode, SankeyRawLink> & SankeyRawLink
-
-function buildSankeyLinkPath(link: SankeyLink<SankeyRawNode, SankeyRawLink>): string {
-  const sourceNode = typeof link.source === 'object' ? (link.source as SankeyNodeEx) : null
-  const targetNode = typeof link.target === 'object' ? (link.target as SankeyNodeEx) : null
-  if (!sourceNode || !targetNode) return ''
-  const x0 = sourceNode.x1 ?? 0
-  const x1 = targetNode.x0 ?? 0
-  const y0 = link.y0 ?? 0
-  const y1 = link.y1 ?? 0
-  if (!Number.isFinite(x0) || !Number.isFinite(x1) || !Number.isFinite(y0) || !Number.isFinite(y1)) return ''
-  const halfWidth = Math.max(SANKEY_MIN_LINK_WIDTH_PX, link.width ?? 0) / 2
-  const top0 = y0 - halfWidth
-  const bottom0 = y0 + halfWidth
-  const top1 = y1 - halfWidth
-  const bottom1 = y1 + halfWidth
-  // Use a filled ribbon instead of a thick stroke. Thick SVG strokes expand along
-  // the curve normal and create crescent artifacts when adjacent columns are close.
-  if (x1 - x0 <= 6) {
-    return `M${x0},${top0}L${x1},${top1}L${x1},${bottom1}L${x0},${bottom0}Z`
-  }
-  const xm = (x0 + x1) / 2
-  return `M${x0},${top0}C${xm},${top0} ${xm},${top1} ${x1},${top1}L${x1},${bottom1}C${xm},${bottom1} ${xm},${bottom0} ${x0},${bottom0}Z`
-}
-
-/**
- * bar 与「相邻列间空隙」的比例：留空 = barWidth * ratio（ratio 越大 bar 越窄、连线越易辨认）
- * 例：1.5 即空隙约等于 1.5 倍条宽
- */
-const SANKEY_GAP_PER_BAR = 2.1
-/** Y 轴基准：每个子任务默认占用高度（超出面板时再整体压缩） */
-const SANKEY_ROW_BASE_PX = 50
-/** Sankey 连线最小可见宽度（避免高密场景被 1px 下限“增肥”） */
-const SANKEY_MIN_LINK_WIDTH_PX = 0.3
 
 export default function SubtaskDebugPanel({
   messages,
@@ -103,9 +42,7 @@ export default function SubtaskDebugPanel({
   listScrollRef,
   sessionDirectory,
   forkPanelSnapshotBundle = null,
-  leadingTreemapSize,
   selection = null,
-  onSelectActionType,
   onSelectAction,
   flowLayoutMode = 'timeline',
 }: SubtaskDebugPanelProps) {
@@ -114,8 +51,6 @@ export default function SubtaskDebugPanel({
   const [childSessionMessages, setChildSessionMessages] = useState<Record<string, OcMessage[]>>({})
   const summaryViewportRef = useRef<HTMLDivElement | null>(null)
   const [summaryViewportSize, setSummaryViewportSize] = useState({ width: 0, height: 0 })
-  const sankeyViewportRef = useRef<HTMLDivElement | null>(null)
-  const [sankeyViewportSize, setSankeyViewportSize] = useState({ width: 0, height: 0 })
 
   const summarySegments = useMemo(
     () =>
@@ -140,7 +75,7 @@ export default function SubtaskDebugPanel({
   )
 
   useEffect(() => {
-    if (flowLayoutMode !== 'summary' && flowLayoutMode !== 'sankey') return
+    if (flowLayoutMode !== 'summary') return
     const ids = Array.from(
       new Set(summarySegments.flatMap((seg) => seg.childDescriptors.map((d) => d.childSessionID))),
     )
@@ -175,19 +110,6 @@ export default function SubtaskDebugPanel({
     if (!el) return
     const update = () => {
       setSummaryViewportSize({ width: el.clientWidth, height: el.clientHeight })
-    }
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [flowLayoutMode])
-
-  useEffect(() => {
-    if (flowLayoutMode !== 'sankey') return
-    const el = sankeyViewportRef.current
-    if (!el) return
-    const update = () => {
-      setSankeyViewportSize({ width: el.clientWidth, height: el.clientHeight })
     }
     update()
     const observer = new ResizeObserver(update)
@@ -334,218 +256,6 @@ export default function SubtaskDebugPanel({
     </div>
   )
 
-  const sankeyLayout = useMemo(() => {
-    const rowsForSankey = summaryRowsSorted.filter((row) => row.actions.length >= 2)
-    const stepCount = Math.max(0, ...rowsForSankey.map((row) => row.actions.length))
-    if (stepCount < 2) {
-      return {
-        stepCount: 0,
-        nodes: [] as SankeyNodeEx[],
-        links: [] as SankeyLinkEx[],
-        nodesById: new Map<string, SankeyNodeEx>(),
-        columnX: [] as number[],
-        width: 0,
-        height: 0,
-      }
-    }
-
-    const nodeSet = new Map<string, SankeyRawNode>()
-    const linkStats = new Map<string, SankeyRawLink>()
-    const nodesPerStep = new Map<number, Set<string>>()
-
-    for (const row of rowsForSankey) {
-      for (let i = 0; i < row.actions.length; i++) {
-        const actionType = row.actions[i]!.actionType as ActionType
-        const nodeId = `${i}|${actionType}`
-        if (!nodeSet.has(nodeId)) nodeSet.set(nodeId, { id: nodeId, step: i, actionType })
-        const col = nodesPerStep.get(i) ?? new Set<string>()
-        col.add(nodeId)
-        nodesPerStep.set(i, col)
-      }
-      for (let i = 0; i < row.actions.length - 1; i++) {
-        const sourceType = row.actions[i]!.actionType as ActionType
-        const targetType = row.actions[i + 1]!.actionType as ActionType
-        const source = `${i}|${sourceType}`
-        const target = `${i + 1}|${targetType}`
-        const key = `${source}->${target}`
-        const item = linkStats.get(key)
-        if (item) item.value += 1
-        else linkStats.set(key, { source, target, value: 1 })
-      }
-    }
-
-    const width = Math.max(1, sankeyViewportSize.width)
-    const height = Math.max(1, sankeyViewportSize.height)
-    const LEFT = 36
-    const RIGHT = 24
-    const TOP = 18
-    const BOTTOM = 12
-    const innerW = width - LEFT - RIGHT
-    const innerH = height - TOP - BOTTOM
-    const maxNodesInColumn = Math.max(1, ...Array.from(nodesPerStep.values()).map((s) => s.size))
-    const nodePadding = Math.max(5, Math.min(16, Math.floor(innerH / (maxNodesInColumn + 2))))
-    /**
-     * bar 宽度：随 step 数缩小；empty = bar * SANKEY_GAP_PER_BAR。
-     * innerW = n*bar + (n-1)*(bar*ratio) = bar * (n + ratio*(n-1))
-     */
-    const nCol = stepCount
-    const denom = nCol + SANKEY_GAP_PER_BAR * Math.max(0, nCol - 1)
-    const nodeWidth = Math.max(2, Math.min(14, Math.floor(innerW / Math.max(4, denom))))
-    const engine = d3Sankey<SankeyRawNode, SankeyRawLink>()
-      .nodeId((d) => d.id)
-      .nodeAlign((node) => node.step)
-      // Keep X fixed by step, let d3 freely optimize Y order to reduce crossings.
-      .iterations(64)
-      .nodeWidth(nodeWidth)
-      .nodePadding(nodePadding)
-      .extent([
-        [LEFT, TOP],
-        [Math.max(LEFT + 1, width - RIGHT), Math.max(TOP + 1, height - BOTTOM)],
-      ])
-
-    const graph = engine({
-      nodes: Array.from(nodeSet.values()).map((n) => ({ ...n })),
-      links: Array.from(linkStats.values()).map((l) => ({ ...l })),
-    })
-    const nodes = graph.nodes as SankeyNodeEx[]
-    const links = graph.links as SankeyLinkEx[]
-
-    const kx = nCol > 1 ? (innerW - nodeWidth) / (nCol - 1) : 0
-    for (const node of nodes) {
-      const i = node.step
-      node.x0 = LEFT + i * kx
-      node.x1 = node.x0 + nodeWidth
-    }
-
-    const minY = Math.min(...nodes.map((n) => n.y0 ?? 0))
-    const maxY = Math.max(...nodes.map((n) => n.y1 ?? 0))
-    const contentH = Math.max(1, maxY - minY)
-    const rowCount = Math.max(1, rowsForSankey.length)
-    const desiredContentH = Math.min(innerH, rowCount * SANKEY_ROW_BASE_PX)
-    const scaleH = Math.max(0.01, desiredContentH / contentH)
-    const offY = TOP + (innerH - contentH * scaleH) / 2
-    for (const node of nodes) {
-      node.y0 = offY + ((node.y0 ?? 0) - minY) * scaleH
-      node.y1 = offY + ((node.y1 ?? 0) - minY) * scaleH
-    }
-    for (const link of links) {
-      link.y0 = offY + ((link.y0 ?? 0) - minY) * scaleH
-      link.y1 = offY + ((link.y1 ?? 0) - minY) * scaleH
-      const w0 = link.width ?? 0
-      link.width = w0 * scaleH
-    }
-
-    const nodesById = new Map(nodes.map((n) => [n.id, n]))
-    const columnX = Array.from({ length: stepCount }, (_, step) => LEFT + step * kx + nodeWidth / 2)
-    const displayLinks = links.filter((l) => {
-      const s = l.source
-      const t = l.target
-      if (typeof s !== 'object' || typeof t !== 'object') return false
-      return (t as SankeyNodeEx).step === (s as SankeyNodeEx).step + 1
-    })
-
-    return {
-      stepCount,
-      nodes,
-      links: displayLinks,
-      nodesById,
-      columnX,
-      width,
-      height,
-    }
-  }, [summaryRowsSorted, sankeyViewportSize.width, sankeyViewportSize.height])
-
-  const sankeyPanel = (
-    <div
-      ref={sankeyViewportRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        display: 'flex',
-        alignItems: 'stretch',
-        justifyContent: 'stretch',
-      }}
-    >
-      {sankeyLayout.stepCount < 2 ? (
-        <span style={{ color: '#AAA', fontSize: 11 }}>至少需要两步 action 才能绘制 sankey</span>
-      ) : (
-        <svg width="100%" height="100%" viewBox={`0 0 ${sankeyLayout.width} ${sankeyLayout.height}`}>
-          <defs>
-            {sankeyLayout.links.map((link, i) => {
-              const sourceNode = typeof link.source === 'object' ? (link.source as SankeyNodeEx) : null
-              const targetNode = typeof link.target === 'object' ? (link.target as SankeyNodeEx) : null
-              if (!sourceNode || !targetNode) return null
-              const sourceColor = getActionTypeTriad(actionTypePaletteId, sourceNode.actionType).stroke
-              const targetColor = getActionTypeTriad(actionTypePaletteId, targetNode.actionType).stroke
-              const sx = sourceNode.x1 ?? 0
-              const sy = link.y0 ?? 0
-              const tx = targetNode.x0 ?? 0
-              const ty = link.y1 ?? 0
-              const g0x = Math.min(sx, tx)
-              const g1x = Math.max(sx, tx)
-              const c0 = sx <= tx ? sourceColor : targetColor
-              const c1 = sx <= tx ? targetColor : sourceColor
-              return (
-                <linearGradient
-                  key={`${sourceNode.id}→${targetNode.id}`}
-                  id={`sankey-grad-${i}`}
-                  gradientUnits="userSpaceOnUse"
-                  x1={g0x}
-                  y1={sy}
-                  x2={g1x}
-                  y2={ty}
-                >
-                  <stop offset="0%" stopColor={c0} />
-                  <stop offset="100%" stopColor={c1} />
-                </linearGradient>
-              )
-            })}
-          </defs>
-          {sankeyLayout.links.map((link, i) => {
-            const sourceNode = typeof link.source === 'object' ? (link.source as SankeyNodeEx) : null
-            const targetNode = typeof link.target === 'object' ? (link.target as SankeyNodeEx) : null
-            if (!sourceNode || !targetNode) return null
-            const pathD = buildSankeyLinkPath(link as SankeyLink<SankeyRawNode, SankeyRawLink>)
-            return (
-              <path
-                key={`${sourceNode.id}->${targetNode.id}`}
-                d={pathD}
-                fill={`url(#sankey-grad-${i})`}
-                fillOpacity={0.45}
-                stroke="none"
-              >
-                <title>{`${sourceNode.actionType} → ${targetNode.actionType}\nCount: ${link.value}`}</title>
-              </path>
-            )
-          })}
-          {sankeyLayout.nodes.map((node) => {
-            const triad = getActionTypeTriad(actionTypePaletteId, node.actionType)
-            const h = Math.max(0, (node.y1 ?? 0) - (node.y0 ?? 0))
-            const x = node.x0 ?? 0
-            const y = node.y0 ?? 0
-            const w = Math.max(0, (node.x1 ?? 0) - (node.x0 ?? 0))
-            return (
-              <g key={node.id}>
-                <rect
-                  x={x}
-                  y={y}
-                  width={w}
-                  height={h}
-                  fill={node.actionType === 'UserRequest' ? '#8F8F8F' : triad.stroke}
-                  fillOpacity={1}
-                  stroke="none"
-                  rx={0}
-                >
-                  <title>{`${node.actionType}\nStep: ${node.step + 1}\nWeight: ${Math.round(node.value ?? 0)}`}</title>
-                </rect>
-              </g>
-            )
-          })}
-        </svg>
-      )}
-    </div>
-  )
-
   return (
     <div
       style={{
@@ -564,16 +274,13 @@ export default function SubtaskDebugPanel({
           marginBottom: 8,
         }}
       >
-        <ActionTypeColorLegend
-          paletteId={actionTypePaletteId}
-          variant={flowLayoutMode === 'sankey' ? 'sankey-bars' : 'default'}
-        />
+        <ActionTypeColorLegend paletteId={actionTypePaletteId} />
       </div>
       <div
         ref={listScrollRef}
         style={{
           flex: 1,
-          overflowY: flowLayoutMode === 'summary' || flowLayoutMode === 'sankey' ? 'hidden' : 'auto',
+          overflowY: flowLayoutMode === 'summary' ? 'hidden' : 'auto',
           fontSize: 11,
           color: '#333',
           lineHeight: 1.45,
@@ -581,8 +288,6 @@ export default function SubtaskDebugPanel({
       >
         {flowLayoutMode === 'summary' ? (
           summaryPanel
-        ) : flowLayoutMode === 'sankey' ? (
-          sankeyPanel
         ) : visibleSubtasks.length === 0 ? (
           <span style={{ color: '#AAA', fontSize: 11 }}>暂无子任务</span>
         ) : (
@@ -601,90 +306,17 @@ export default function SubtaskDebugPanel({
               onAnalyzeFromAction={onAnalyzeFromAction}
               sessionDirectory={sessionDirectory}
               forkPanelSnapshotBundle={forkPanelSnapshotBundle}
-              leadingTreemapSize={leadingTreemapSize}
-              selectedActionType={
-                selection && selection.kind === 'type' && selection.subtaskIndex === sourceIndex
-                  ? selection.actionType
-                  : null
-              }
               selectedActionKey={
-                selection && selection.kind === 'action' && selection.subtaskIndex === sourceIndex
-                  ? selection.actionKey
-                  : null
+                selection && selection.subtaskIndex === sourceIndex ? selection.actionKey : null
               }
-              flowHighlightedActionKey={
-                selection &&
-                selection.kind === 'action' &&
-                selection.subtaskIndex === sourceIndex &&
-                selection.source === 'treemap'
-                  ? selection.actionKey
-                  : null
-              }
-              /**
-               * 跨子任务 dim 已取消：treemap / rect 选中只影响命中所在子任务卡片，
-               * 其它卡片完全保持正常显示，避免「点一个 rect 整页都暗下去」。
-               */
               otherSubtaskHasSelection={false}
-              onSelectActionType={
-                onSelectActionType
-                  ? (type) => onSelectActionType(sourceIndex, type)
-                  : undefined
-              }
-              onSelectAction={
-                onSelectAction
-                  ? (key) => onSelectAction(sourceIndex, key)
-                  : undefined
-              }
               onSelectActionFromFlow={
-                onSelectAction
-                  ? (key) => onSelectAction(sourceIndex, key, 'flow')
-                  : undefined
+                onSelectAction ? (key) => onSelectAction(sourceIndex, key) : undefined
               }
-              flowLayoutMode={flowLayoutMode}
               colorBy={colorBy}
               onColorByChange={setColorBy}
               actionTypePaletteId={actionTypePaletteId}
             />
-            {/**
-             * 仅 leading-treemap 模式下：相邻 treemap 之间画一条向下箭头，提示
-             * 子任务从上到下的时序流转。位置对齐 treemap 列水平中点，与卡片 wrapper 内
-             * 的 treemap 起点（左侧 0）+ treemap_size/2 重合。
-             */}
-            {leadingTreemapSize && si < visibleSubtasks.length - 1 ? (
-              <div
-                aria-hidden
-                style={{
-                  width: '100%',
-                  height: 16,
-                  marginTop: -4,
-                  marginBottom: -4,
-                  pointerEvents: 'none',
-                }}
-              >
-                <svg
-                  width={leadingTreemapSize}
-                  height={16}
-                  style={{ display: 'block' }}
-                >
-                  <line
-                    x1={leadingTreemapSize / 2}
-                    y1={0}
-                    x2={leadingTreemapSize / 2}
-                    y2={11}
-                    stroke="#BFBFBF"
-                    strokeWidth={1.2}
-                  />
-                  <polyline
-                    points={`${leadingTreemapSize / 2 - 3.5},9 ${leadingTreemapSize / 2},14 ${leadingTreemapSize / 2 + 3.5},9`}
-                    fill="none"
-                    stroke="#BFBFBF"
-                    strokeWidth={1.2}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </div>
-            ) : null}
             </Fragment>
           ))
         )}

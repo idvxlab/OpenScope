@@ -10,16 +10,12 @@ const fontSans =
 
 type Props = {
   paletteId: ActionTypePaletteId
-  variant?: 'default' | 'sankey-bars'
 }
 
 /**
  * 两行图例：第一行 action_type，第二行色块 / 符号（UserRequest 为空心圆环，无方框底）。
  */
-export default function ActionTypeColorLegend({
-  paletteId,
-  variant = 'default',
-}: Props) {
+export default function ActionTypeColorLegend({ paletteId }: Props) {
   const buildIconMarkup = (type: ActionType): string => {
     const raw = getActionFlowIconSvg(type)
     return raw.replace(/<svg\b/, '<svg width="12" height="12"')
@@ -48,7 +44,6 @@ export default function ActionTypeColorLegend({
       stroke: c.stroke,
       icon: buildIconMarkup(type),
       iconColor: c.accent,
-      sankeyBarColor: type === 'UserRequest' ? '#8F8F8F' : c.stroke,
     }
   })
   const items = typeItems
@@ -126,20 +121,7 @@ export default function ActionTypeColorLegend({
                 {item.label}
               </div>
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                {variant === 'sankey-bars' ? (
-                  <span
-                    title={`${item.label} · ${item.sankeyBarColor}`}
-                    style={{
-                      width: 18,
-                      height: 10,
-                      borderRadius: 2,
-                      boxSizing: 'border-box',
-                      background: item.sankeyBarColor,
-                      flexShrink: 0,
-                      display: 'inline-flex',
-                    }}
-                  />
-                ) : item.key === 'UserRequest' ? (
+                {item.key === 'UserRequest' ? (
                   <span
                     title={`${item.label} · ${item.stroke}`}
                     style={{

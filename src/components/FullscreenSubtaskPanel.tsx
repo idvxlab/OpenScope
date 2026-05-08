@@ -5,6 +5,8 @@ import type { AssistantSubtask } from '../utils/subtaskGrouping'
 import type { ForkFromActionContext, ForkPanelSnapshotBundle } from '../utils/forkPanelSnapshot'
 import SubtaskDebugPanel from './SubtaskDebugPanel'
 
+type SubtaskSelection = { subtaskIndex: number; actionKey: string } | null
+
 interface Props {
   open: boolean
   onClose: () => void
@@ -16,13 +18,14 @@ interface Props {
   onAnalyzeFromAction?: (action: MappedAction & { row: number }) => void
   sessionDirectory?: string
   forkPanelSnapshotBundle?: ForkPanelSnapshotBundle | null
-  /** 默认 220 —— 大致与子任务卡片最小高度一致；后续可改 */
-  treemapSize?: number
+  flowLayoutMode: 'timeline' | 'summary'
+  selection: SubtaskSelection
+  onSelectAction: (subtaskIndex: number, actionKey: string | null) => void
 }
 
 /**
- * 全屏 packing view：复用 SubtaskDebugPanel，但每张子任务卡左侧前置一个
- * actionType 频次 squarified treemap。Esc / × / 点击遮罩关闭。
+ * 全屏子任务面板：复用 SubtaskDebugPanel。Esc / × / 点击遮罩关闭。
+ * 预留为后续在此区域叠加其它模块的容器。
  */
 export default function FullscreenSubtaskPanel({
   open,
@@ -35,7 +38,9 @@ export default function FullscreenSubtaskPanel({
   onAnalyzeFromAction,
   sessionDirectory,
   forkPanelSnapshotBundle = null,
-  treemapSize = 220,
+  flowLayoutMode,
+  selection,
+  onSelectAction,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -112,11 +117,9 @@ export default function FullscreenSubtaskPanel({
                 color: '#171717',
               }}
             >
-              子任务 Packing View
+              子任务面板（全屏）
             </span>
-            <span style={{ fontSize: 11, color: '#8F8F8F' }}>
-              共 {visibleSubtasks.length} 个子任务 · 左侧 treemap 按 action 类型出现次数面积切分
-            </span>
+            <span style={{ fontSize: 11, color: '#8F8F8F' }}>共 {visibleSubtasks.length} 个子任务</span>
           </div>
           <button
             type="button"
@@ -169,7 +172,9 @@ export default function FullscreenSubtaskPanel({
             listScrollRef={scrollRef as RefObject<HTMLDivElement | null>}
             sessionDirectory={sessionDirectory}
             forkPanelSnapshotBundle={forkPanelSnapshotBundle}
-            leadingTreemapSize={treemapSize}
+            flowLayoutMode={flowLayoutMode}
+            selection={selection}
+            onSelectAction={onSelectAction}
           />
         </div>
       </div>
