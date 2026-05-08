@@ -16,55 +16,90 @@ Web dashboard for **[OpenCode](https://opencode.ai/)**. It connects to a local O
 
 ---
 
-## How to install and run
+## Installation & Running
 
 ### 1. Install the OpenCode CLI
 
-OpenScope expects OpenCode serving an **HTTP headless API**. Follow the upstream install docs, then verify:
+OpenScope requires the OpenCode CLI running in HTTP headless mode.
+
+Follow the upstream installation guide, then verify the installation:
 
 ```bash
 opencode --version
 ```
 
-References: [OpenCode documentation](https://opencode.ai/docs/).
+Reference: OpenCode documentation.
 
-### 2. Run the HTTP server
+---
+
+### 2. Start the OpenCode HTTP Server
+
+Launch the server with:
 
 ```bash
 opencode serve
 ```
 
-Note the listener URL (often something like `http://127.0.0.1:4096`). If the port differs, mirror it inside `.env.local` (below). You may pin an explicit port, e.g.
+By default, the server listens on an address similar to:
+
+```txt
+http://127.0.0.1:4096
+```
+
+If the port changes, make sure to update it in `.env.local` as well.
+
+You can also specify a fixed port explicitly:
 
 ```bash
 opencode serve --port 4096
 ```
 
-### 3. Configure `.env.local`
+---
+
+### 3. Configure Environment Variables
+
+Create a local environment file:
 
 ```bash
 cp .env.example .env.local
 ```
 
-Set the REST/SSE root to whatever `opencode serve` prints:
+Then set the OpenCode server endpoint:
 
 ```env
 VITE_OPENCODE_BASE=http://127.0.0.1:4096
 ```
 
-| Variable | Role |
+| Variable | Description |
 | --- | --- |
-| `VITE_OPENCODE_BASE` | Base URL for every OpenScope → OpenCode call. Match this to your running CLI. |
-| `VITE_OPENCODE_DEFAULT_MODEL` _(optional)_ | Force a bootstrap model as `provider/model`. Omit to inherit OpenCode’s default. |
+| `VITE_OPENCODE_BASE` | Base URL used for all OpenScope → OpenCode API requests. Must match the running OpenCode server address. |
+| `VITE_OPENCODE_DEFAULT_MODEL` *(optional)* | Overrides the default bootstrap model using the format `provider/model`. If omitted, OpenCode's default model will be used. |
 
-### 4. Install dependencies and launch the UI
+---
+
+### 4. Install Dependencies & Start the UI
+
+Install project dependencies:
 
 ```bash
 npm install
+```
+
+Start the development server:
+
+```bash
 npm run dev
 ```
 
-The SPA dev URL defaults to **[http://localhost:5173](http://localhost:5173)** (see `vite.config.ts`). Leave `opencode serve` running alongside it.
+The frontend development server runs at:
+
+```txt
+http://localhost:5173
+```
+
+(See `vite.config.ts` for configuration details.)
+
+Make sure the `opencode serve` process remains running while using the UI.
 
 ---
 
