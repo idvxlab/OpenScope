@@ -24,8 +24,8 @@ interface Props {
 }
 
 /**
- * Full-screen agent action visualization: wraps SubtaskDebugPanel.
- * Close with Esc, ×, or backdrop click. Extensible for additional modules later.
+ * Full-screen VibeTrace overlay: wraps SubtaskDebugPanel.
+ * Close with Esc, ×, or backdrop click.
  */
 export default function FullscreenSubtaskPanel({
   open,
@@ -71,6 +71,7 @@ export default function FullscreenSubtaskPanel({
     <div
       role="dialog"
       aria-modal="true"
+      aria-label="VibeTrace"
       onClick={onClose}
       style={{
         position: 'fixed',
@@ -117,7 +118,7 @@ export default function FullscreenSubtaskPanel({
                 color: '#171717',
               }}
             >
-              Agent action visualization
+              VibeTrace
             </span>
             <span style={{ fontSize: 11, color: '#8F8F8F' }}>
               {visibleSubtasks.length} subtask{visibleSubtasks.length === 1 ? '' : 's'}

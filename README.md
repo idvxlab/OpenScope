@@ -8,7 +8,7 @@ A web dashboard for **[OpenCode](https://opencode.ai/)** that connects to a loca
 ## UI preview
 
 <p align="center">
-<img src="./fig/timeline-view.png" alt="OpenScope action flow with uniform step widths" width="100%" />
+<img src="./fig/timeline-view.png" alt="VibeTrace action-flow view" width="100%" />
 </p>
 
 ---
@@ -27,7 +27,7 @@ A web dashboard for **[OpenCode](https://opencode.ai/)** that connects to a loca
 
 ### 1. Install the OpenCode CLI
 
-OpenScope requires the OpenCode CLI running in HTTP headless mode.
+VibeTrace requires the OpenCode CLI running in HTTP headless mode.
 
 Follow the [upstream installation guide](https://opencode.ai/download), then verify the installation:
 
@@ -78,7 +78,7 @@ VITE_OPENCODE_BASE=http://127.0.0.1:4096
 
 | Variable | Description |
 | --- | --- |
-| `VITE_OPENCODE_BASE` | Base URL used for all OpenScope → OpenCode API requests. Must match the running OpenCode server address. |
+| `VITE_OPENCODE_BASE` | Base URL used for all VibeTrace → OpenCode API requests. Must match the running OpenCode server address. |
 | `VITE_OPENCODE_DEFAULT_MODEL` *(optional)* | Overrides the default bootstrap model using the format `provider/model`. If omitted, OpenCode's default model will be used. |
 
 ---

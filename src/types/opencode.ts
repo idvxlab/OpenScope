@@ -25,7 +25,7 @@ export interface OcSession {
 }
 
 export interface OcTodo {
-  /** Provided by OpenCode when available; otherwise stable id assigned within the OpenScope session */
+  /** Provided by OpenCode when available; otherwise stable id assigned within the VibeTrace session */
   id?: string
   content: string
   status: 'pending' | 'in_progress' | 'completed'

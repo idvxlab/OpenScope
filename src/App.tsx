@@ -45,6 +45,7 @@ import {
   getLatestTodowriteBatchProgress,
 } from './utils/todoRegistry'
 import { SHOW_COMPOSER_MODEL_UI } from './config/featureFlags'
+import { STORAGE_KEYS } from './config/storageKeys'
 import { buildUserMessageWithGuidance } from './config/harnessGuidance'
 import {
   buildForkPanelSnapshotBundle,
@@ -61,13 +62,10 @@ const AUTO_ABORT_STUCK_RUNNING_AFTER_MS = 24 * 60 * 60 * 1000
 /** If SSE lags after send, poll GET /message until an assistant message appears (streaming / long runs) */
 const POLL_ASSISTANT_INTERVAL_MS = 2000
 const POLL_ASSISTANT_MAX_ROUNDS = 90
-const MANUAL_DIRS_KEY = 'openscope.manual.directories.v1'
-const CLOSED_DIRS_KEY = 'openscope.closed.directories.v1'
-const COMPOSER_MODEL_LS_KEY = 'openscope.opencodeComposerModelRef'
 
 function loadComposerModelRefFromLs(): string {
   try {
-    const v = window.localStorage.getItem(COMPOSER_MODEL_LS_KEY)
+    const v = window.localStorage.getItem(STORAGE_KEYS.composerModelRef)
     return typeof v === 'string' ? v.trim() : ''
   } catch {
     return ''
@@ -94,7 +92,7 @@ function sameDirectory(a: string | undefined, b: string | undefined): boolean {
 
 function loadManualDirectories(): string[] {
   try {
-    const raw = window.localStorage.getItem(MANUAL_DIRS_KEY)
+    const raw = window.localStorage.getItem(STORAGE_KEYS.manualDirectories)
     if (!raw) return []
     const data = JSON.parse(raw)
     if (!Array.isArray(data)) return []
@@ -108,7 +106,7 @@ function loadManualDirectories(): string[] {
 
 function loadClosedDirectories(): string[] {
   try {
-    const raw = window.localStorage.getItem(CLOSED_DIRS_KEY)
+    const raw = window.localStorage.getItem(STORAGE_KEYS.closedDirectories)
     if (!raw) return []
     const data = JSON.parse(raw)
     if (!Array.isArray(data)) return []
@@ -274,11 +272,11 @@ function App() {
   }, [sessions, projectDirectories, manualDirectories, selectedDirectory, closedDirectories])
 
   useEffect(() => {
-    window.localStorage.setItem(MANUAL_DIRS_KEY, JSON.stringify(manualDirectories))
+    window.localStorage.setItem(STORAGE_KEYS.manualDirectories, JSON.stringify(manualDirectories))
   }, [manualDirectories])
 
   useEffect(() => {
-    window.localStorage.setItem(CLOSED_DIRS_KEY, JSON.stringify(closedDirectories))
+    window.localStorage.setItem(STORAGE_KEYS.closedDirectories, JSON.stringify(closedDirectories))
   }, [closedDirectories])
 
   const sessionsInFolder = useMemo(() => {
@@ -340,8 +338,8 @@ function App() {
     const t = ref.trim()
     setComposerModelRef(t)
     try {
-      if (t) window.localStorage.setItem(COMPOSER_MODEL_LS_KEY, t)
-      else window.localStorage.removeItem(COMPOSER_MODEL_LS_KEY)
+      if (t) window.localStorage.setItem(STORAGE_KEYS.composerModelRef, t)
+      else window.localStorage.removeItem(STORAGE_KEYS.composerModelRef)
     } catch {
       /* ignore */
     }
@@ -353,7 +351,7 @@ function App() {
     [selectedSessionId],
   )
 
-  /** Full-screen agent action visualization overlay */
+  /** Full-screen VibeTrace overlay */
   const [subtaskFullscreenOpen, setSubtaskFullscreenOpen] = useState(false)
   /** Column layout: timeline vs summary */
   const [subtaskFlowLayoutMode, setSubtaskFlowLayoutMode] = useState<'timeline' | 'summary'>('timeline')
@@ -1298,7 +1296,7 @@ function App() {
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-              <span style={{ flexShrink: 0 }}>Agent Action Visualization</span>
+              <span style={{ flexShrink: 0 }}>VibeTrace</span>
               {compactionControlHint ? (
                 <span
                   title="OpenCode SSE: session.compacted — context window was compacted"
@@ -1404,8 +1402,8 @@ function App() {
               <button
                 type="button"
                 onClick={() => setSubtaskFullscreenOpen(true)}
-                aria-label="Open agent action visualization fullscreen"
-                title="Open agent action visualization fullscreen"
+                aria-label="Open VibeTrace fullscreen"
+                title="Open VibeTrace fullscreen"
                 disabled={visibleSubtasks.length === 0}
                 style={{
                   width: 26,

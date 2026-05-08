@@ -26,7 +26,7 @@ export class ErrorBoundary extends Component<Props, State> {
             lineHeight: 1.5,
           }}
         >
-          <h1 style={{ fontSize: 18, marginBottom: 12 }}>OpenScope failed to render</h1>
+          <h1 style={{ fontSize: 18, marginBottom: 12 }}>VibeTrace failed to render</h1>
           <p style={{ color: '#444', marginBottom: 12 }}>
             Open Developer Tools (F12) → Console for the full stack trace. If this is related to OpenCode model
             configuration, check your server-side settings as well.

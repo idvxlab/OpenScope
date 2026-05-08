@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { SHOW_COMPOSER_MODEL_UI } from '../config/featureFlags'
+import { COMPOSER_MODEL_DOM_ID } from '../config/storageKeys'
 import type { OcComposerModelOption } from '../services/opencodeApi'
 import { prepareOutgoingFromFiles } from '../utils/messageAttachments'
 
@@ -146,11 +147,11 @@ export default function MessageInput({
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <label htmlFor="openscope-composer-model" style={{ fontSize: 11, color: '#666', flexShrink: 0 }}>
+            <label htmlFor={COMPOSER_MODEL_DOM_ID} style={{ fontSize: 11, color: '#666', flexShrink: 0 }}>
               模型
             </label>
             <select
-              id="openscope-composer-model"
+              id={COMPOSER_MODEL_DOM_ID}
               value={composerModelRef.trim() ? composerModelRef.trim() : ''}
               onChange={(e) => onComposerModelRefChange?.(e.target.value)}
               disabled={disabled || !onComposerModelRefChange || composerModelsLoading}

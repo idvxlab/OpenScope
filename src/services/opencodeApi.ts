@@ -311,20 +311,6 @@ export async function sendMessage(
   if (modelBody) reqBody.model = modelBody
   if (agent) reqBody.agent = agent
 
-  const explicitModel = options?.model?.trim()
-  const resolution =
-    modelBody && explicitModel
-      ? 'composer/options.model'
-      : modelBody
-        ? 'VITE_OPENCODE_DEFAULT_MODEL'
-        : 'server default (omit JSON.model)'
-  console.info('[OpenScope][OpenCode] sendMessage', {
-    sessionId,
-    directory: directory ?? null,
-    model: modelBody ? `${modelBody.providerID}/${modelBody.modelID}` : null,
-    resolution,
-  })
-
   const res = await fetch(url, {
     method: 'POST',
     headers: withDirectoryHeaders({ 'Content-Type': 'application/json' }, directory),

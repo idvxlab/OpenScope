@@ -10,8 +10,7 @@ import {
 } from './actionMapping'
 import { mergeMessagesForActionTooltipLookup } from './actionTooltipMapping'
 import { getMessages } from '../services/opencodeApi'
-
-const STORAGE_PREFIX = 'openscope:fork-panel:'
+import { STORAGE_KEYS } from '../config/storageKeys'
 
 /** Passed when forking from a SubtaskCard action menu */
 export type ForkFromActionContext = {
@@ -49,7 +48,7 @@ export type ForkPanelSnapshotBundle = {
 }
 
 function storageKey(sessionId: string): string {
-  return `${STORAGE_PREFIX}${sessionId}`
+  return `${STORAGE_KEYS.forkPanelPrefix}${sessionId}`
 }
 
 export function saveForkPanelSnapshotBundle(sessionId: string, bundle: ForkPanelSnapshotBundle): void {
