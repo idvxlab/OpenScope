@@ -13,7 +13,8 @@ type Props = {
 }
 
 /**
- * 两行图例：第一行 action_type，第二行色块 / 符号（UserRequest 为空心圆环，无方框底）。
+ * Two-row legend: first row action_type labels, second row swatches / symbols
+ * (UserRequest is a hollow ring, no square base).
  */
 export default function ActionTypeColorLegend({ paletteId }: Props) {
   const buildIconMarkup = (type: ActionType): string => {
@@ -82,7 +83,7 @@ export default function ActionTypeColorLegend({ paletteId }: Props) {
             whiteSpace: 'nowrap',
           }}
         >
-          Legend (Action Type)
+          Action type legend
         </span>
       </div>
       {itemRows.map((row, rowIndex) => (

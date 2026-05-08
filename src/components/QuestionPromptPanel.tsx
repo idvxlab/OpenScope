@@ -10,8 +10,8 @@ interface QuestionPromptPanelProps {
 }
 
 /**
- * OpenCode `question` 工具：按 SSE `question.asked` 中的题目渲染选项，提交格式与
- * `POST /question/{requestID}/reply` 的 `answers` 一致（每题为所选 option 的 label 数组）。
+ * Renders OpenCode question prompts from SSE `question.asked`; submitted answers follow
+ * POST `/question/{requestID}/reply` (selections are arrays of chosen option labels per prompt).
  */
 export default function QuestionPromptPanel({
   request,
@@ -21,9 +21,9 @@ export default function QuestionPromptPanel({
   onReject,
 }: QuestionPromptPanelProps) {
   const { questions, id } = request
-  /** 每题已选 label 列表 */
+  /** Selected labels per prompt */
   const [selections, setSelections] = useState<string[][]>(() => questions.map(() => []))
-  /** 每题自定义补充（custom 允许时） */
+  /** Free-text addon when prompts allow custom input */
   const [customTexts, setCustomTexts] = useState<string[]>(() => questions.map(() => ''))
 
   useEffect(() => {
@@ -70,7 +70,7 @@ export default function QuestionPromptPanel({
   const submit = async () => {
     const answers = buildAnswers()
     if (!answers) {
-      window.alert('请为每道题至少选择一项，或在自定义栏填写答案。')
+      window.alert('Pick at least one answer per prompt, or fill the custom field where allowed.')
       return
     }
     await onReply(answers)
@@ -86,7 +86,7 @@ export default function QuestionPromptPanel({
       }}
     >
       <div style={{ fontSize: 12, fontWeight: 600, color: '#4A2D7C', marginBottom: 10 }}>
-        需要你的选择（agent 提问）
+        The agent needs your choice
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {questions.map((q, qi) => (
@@ -139,7 +139,7 @@ export default function QuestionPromptPanel({
             </div>
             {q.custom !== false && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 10, color: '#999', marginBottom: 4 }}>补充说明（可选）</div>
+                <div style={{ fontSize: 10, color: '#999', marginBottom: 4 }}>Notes (optional)</div>
                 <input
                   type="text"
                   value={customTexts[qi] ?? ''}
@@ -152,7 +152,7 @@ export default function QuestionPromptPanel({
                       return next
                     })
                   }}
-                  placeholder="若有额外说明可写在这里，会一并提交"
+                  placeholder="Optional extra detail — submitted with your selection"
                   style={{
                     width: '100%',
                     fontSize: 11,
@@ -183,7 +183,7 @@ export default function QuestionPromptPanel({
               cursor: disabled || submitting ? 'not-allowed' : 'pointer',
             }}
           >
-            跳过
+            Skip
           </button>
         )}
         <button
@@ -200,7 +200,7 @@ export default function QuestionPromptPanel({
             cursor: disabled || submitting ? 'not-allowed' : 'pointer',
           }}
         >
-          {submitting ? '提交中…' : '提交答案'}
+          {submitting ? 'Sending…' : 'Submit'}
         </button>
       </div>
     </div>

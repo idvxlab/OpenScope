@@ -24,8 +24,8 @@ interface Props {
 }
 
 /**
- * 全屏子任务面板：复用 SubtaskDebugPanel。Esc / × / 点击遮罩关闭。
- * 预留为后续在此区域叠加其它模块的容器。
+ * Full-screen agent action visualization: wraps SubtaskDebugPanel.
+ * Close with Esc, ×, or backdrop click. Extensible for additional modules later.
  */
 export default function FullscreenSubtaskPanel({
   open,
@@ -117,15 +117,17 @@ export default function FullscreenSubtaskPanel({
                 color: '#171717',
               }}
             >
-              子任务面板（全屏）
+              Agent action visualization
             </span>
-            <span style={{ fontSize: 11, color: '#8F8F8F' }}>共 {visibleSubtasks.length} 个子任务</span>
+            <span style={{ fontSize: 11, color: '#8F8F8F' }}>
+              {visibleSubtasks.length} subtask{visibleSubtasks.length === 1 ? '' : 's'}
+            </span>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="关闭"
-            title="关闭 (Esc)"
+            aria-label="Close"
+            title="Close (Esc)"
             style={{
               width: 32,
               height: 32,

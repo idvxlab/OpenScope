@@ -1,27 +1,26 @@
 /**
- * Harness 侧「引导语」：在发往 OpenCode 之前拼进本条 user 消息。
+ * Harness preamble injected before each outbound user message to OpenCode.
  *
- * 说明：
- * - OpenCode 内置的 system prompt 由本地 OpenCode 配置，HTTP `POST /session/:id/message`
- *   通常只接受用户消息的 parts，本面板无法直接覆盖服务端 system。
- * - 因此这里通过「用户消息前缀」实现同等引导效果；OpenCode 存的是完整拼接文本，界面展示时用 stripHarnessGuidanceForDisplay 只显示用户输入。
+ * Notes:
+ * - OpenCode system prompts remain server-side — `POST /session/:id/message` usually only carries user parts,
+ *   so this UI cannot override system directly.
+ * - We approximate the same effect via a user-message prefix; stored transcripts include the full string while
+ *   `stripHarnessGuidanceForDisplay` shows only the user-authored portion in the chat column.
  *
- * 修改方式：直接改下面常量，或把 HARNESS_GUIDANCE_ENABLED 设为 false 关闭注入。
+ * Toggle with `HARNESS_GUIDANCE_ENABLED` or edit the strings below.
  */
 
-/** 设为 false 时原样发送输入框内容，不附加任何引导。 */
+/** When false, send the composer text exactly as typed (no preamble). */
 export const HARNESS_GUIDANCE_ENABLED = true
 
 /**
- * 每条用户消息前附加的引导（可按需改写）。
- * 建议保留「先计划、再执行」的结构，便于与子任务 / Todo 可视化对齐。
+ * Preamble prepended to every user turn (edit freely).
+ * Keep a plan-then-execute shape so subtask / todo visualizations stay meaningful.
  */
-export const HARNESS_USER_GUIDANCE = `[计划优先]回答用户输入前，总是先列出计划，使用todowrite工具生成todo,然后再执行。如果当前已有进行中的或部分完成的todo，不要完全新建todo,而是完全原样保留已有的已完成项，然后根据实际需要决定是修改未完成待办还是按照计划执行。`
+export const HARNESS_USER_GUIDANCE = `[Plan-first] Before answering the user, outline a concise plan, use the todowrite tool to maintain todos, then execute. If todos already exist with in-progress or partially completed work, never wipe them—preserve completed entries verbatim and adjust only unfinished work according to the plan.`
 
-/**
- * 引导与真实用户输入之间的固定分隔（须与发送逻辑一致；展示侧也用它识别截断点）。
- */
-export const HARNESS_USER_INPUT_MARKER = '\n\n---\n【用户输入】\n'
+/** Separator between preamble and authentic user content — send + display parsers must agree. */
+export const HARNESS_USER_INPUT_MARKER = '\n\n---\nUser input\n'
 
 export function buildUserMessageWithGuidance(rawUserText: string): string {
   const t = rawUserText.trimEnd()
@@ -29,10 +28,15 @@ export function buildUserMessageWithGuidance(rawUserText: string): string {
   return `${HARNESS_USER_GUIDANCE}${HARNESS_USER_INPUT_MARKER}${t}`
 }
 
+/** Legacy harness markers (literal Chinese) — retained so older transcripts still strip correctly. */
+const LEGACY_USER_INPUT_MARKER = '\n\n---\n【用户输入】\n'
+const LEGACY_USER_INPUT_MARKER_TIGHT = '\n---\n【用户输入】\n'
+
 /**
- * 从存盘的 user 全文得到「仅用户输入」：所有对话里展示 / 复制用户消息前都应走此函数。
+ * Recover the user's visible text from persisted rows — call this everywhere user bubbles render or copy text.
  *
- * 顺序：① 与当前 `HARNESS_USER_GUIDANCE + HARNESS_USER_INPUT_MARKER` 整段前缀；② 文中出现标准 `---` + `【用户输入】` 分隔时取其后（兼容引导文案改过、旧会话仍带 `[计划优先]…` 段落）。
+ * Order: strip the active `HARNESS_USER_GUIDANCE + HARNESS_USER_INPUT_MARKER` prefix; else look for `---` +
+ * `User input` / legacy `【用户输入】` markers (handles older Chinese harness text).
  */
 export function stripHarnessGuidanceForDisplay(storedText: string): string {
   if (!storedText) return storedText
@@ -45,13 +49,18 @@ export function stripHarnessGuidanceForDisplay(storedText: string): string {
     }
   }
 
-  const markerNeedles = ['\n\n---\n【用户输入】\n', '\n---\n【用户输入】\n']
+  const markerNeedles = [
+    `${HARNESS_USER_INPUT_MARKER}`,
+    '\n---\nUser input\n',
+    LEGACY_USER_INPUT_MARKER,
+    LEGACY_USER_INPUT_MARKER_TIGHT,
+  ]
   for (const m of markerNeedles) {
     const idx = normalized.indexOf(m)
     if (idx >= 0) return normalized.slice(idx + m.length).trimStart()
   }
 
-  const relaxed = /\n---\s*\n【用户输入】\s*\n/
+  const relaxed = /\n---\s*\n(?:User input|【用户输入】)\s*\n/
   const match = normalized.match(relaxed)
   if (match?.index !== undefined) {
     return normalized.slice(match.index + match[0].length).trimStart()

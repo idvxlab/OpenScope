@@ -22,13 +22,13 @@ interface SubtaskDebugPanelProps {
   onAnalyzeFromAction?: (action: MappedAction & { row: number }) => void
   listScrollRef?: RefObject<HTMLDivElement | null>
   sessionDirectory?: string
-  /** Fork 后新 session：本地保存的 fork 前子任务面板可视化快照 */
+  /** Saved fork-before snapshot for the forked session (local). */
   forkPanelSnapshotBundle?: ForkPanelSnapshotBundle | null
-  /** ActionFlow rect 点击联动 */
+  /** Links selection from ActionFlow rects. */
   selection?: { subtaskIndex: number; actionKey: string } | null
-  /** ActionFlow rect 单击 → action-level 选中 */
+  /** ActionFlow rect click → action-level selection. */
   onSelectAction?: (subtaskIndex: number, actionKey: string | null) => void
-  /** 全局布局模式（由子任务面板头部统一切换） */
+  /** Layout mode toggled by the subtask panel header. */
   flowLayoutMode?: 'timeline' | 'summary'
 }
 
@@ -122,7 +122,7 @@ export default function SubtaskDebugPanel({
       const msgs = childSessionMessages[desc.childSessionID] ?? []
       return buildMappedActionsFromMessages(msgs).map((a, i) => ({
         ...a,
-        /** 锚定到 parent task 后面，保证同一子任务内时序可读 */
+        /** Place after parent task for readable ordering within the subtask. */
         sortTime: desc.anchorSortTime + 0.0005 + i * 0.0000001,
       }))
     })
@@ -136,10 +136,16 @@ export default function SubtaskDebugPanel({
     }
   })
   /**
-   * 分层分组排序（无标题）：
-   * action1 相同聚在一起；组内再按 action2；再按 action3... 递归比较。
+   * Lexicographic sort by action-type sequence (no section headers).
+   * Rows whose timeline starts with UserRequest are placed first so “user turn → …”
+   * groups sit at the top; then group by first differing action type, then length / rowIndex.
    */
   const summaryRowsSorted = [...summaryRows].sort((a, b) => {
+    const startsUr = (sig: string[]) => sig[0] === 'UserRequest'
+    const pri = (sig: string[]) => (startsUr(sig) ? 0 : 1)
+    const cmpPri = pri(a.sequenceSignature) - pri(b.sequenceSignature)
+    if (cmpPri !== 0) return cmpPri
+
     const n = Math.min(a.sequenceSignature.length, b.sequenceSignature.length)
     for (let i = 0; i < n; i++) {
       const cmp = a.sequenceSignature[i]!.localeCompare(b.sequenceSignature[i]!, 'en')
@@ -179,7 +185,7 @@ export default function SubtaskDebugPanel({
       }}
     >
       {summaryRowsSorted.length === 0 ? (
-        <span style={{ color: '#AAA', fontSize: 11 }}>暂无子任务</span>
+        <span style={{ color: '#AAA', fontSize: 11 }}>No subtasks</span>
       ) : (
         summaryRowsSorted.map((row) => {
           return (
@@ -289,7 +295,7 @@ export default function SubtaskDebugPanel({
         {flowLayoutMode === 'summary' ? (
           summaryPanel
         ) : visibleSubtasks.length === 0 ? (
-          <span style={{ color: '#AAA', fontSize: 11 }}>暂无子任务</span>
+          <span style={{ color: '#AAA', fontSize: 11 }}>No subtasks</span>
         ) : (
           visibleSubtasks.map(({ subtask: st, sourceIndex }, si) => (
             <Fragment

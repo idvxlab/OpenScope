@@ -25,7 +25,7 @@ export interface OcSession {
 }
 
 export interface OcTodo {
-  /** OpenCode 若下发则使用；否则由 cockpit 会话内分配稳定 id */
+  /** Provided by OpenCode when available; otherwise stable id assigned within the OpenScope session */
   id?: string
   content: string
   status: 'pending' | 'in_progress' | 'completed'
@@ -42,12 +42,12 @@ export type PartType =
   | 'image'
   | 'step-end'
   | 'snapshot'
-  /** OpenCode 在上下文压缩时写入的部件（见 packages/opencode 消息序列化） */
+  /** OpenCode writes this part type during context compaction (see packages/opencode messaging) */
   | 'compaction'
 
 export interface OcMessageInfo {
   role: 'user' | 'assistant'
-  content?: string  // user message 的文本内容
+  content?: string  // plaintext for user rows
   time: {
     created: number
     completed?: number
@@ -95,15 +95,15 @@ export type ToolPart = {
   callID: string
   tool: string
   state: {
-    /** OpenCode question 等工具在交互完成前可能为 pending */
+    /** question tools may remain pending until the user responds */
     status: 'pending' | 'running' | 'completed' | 'error'
     input?: Record<string, unknown>
     output?: string
-    /** 服务端生成的可读标题（如 read 路径、websearch 查询摘要、bash 说明） */
+    /** Server-generated title (read path, websearch summary, bash description, etc.) */
     title?: string
-    /** 部分工具（如 task）会把子会话信息放在 metadata（running/completed 都可能出现） */
+    /** Some tools (e.g. task) stash child session ids in metadata for running + completed states */
     metadata?: Record<string, unknown>
-    /** 工具失败时的错误（常见形态：`ProviderModelNotFoundError: ...`） */
+    /** Tool failure payload (typical pattern: `ProviderModelNotFoundError: ...`) */
     error?: string
     time?: { start?: number; end?: number }
   }
@@ -119,7 +119,7 @@ export type StepStartPart = {
   messageID: string
 }
 
-/** Agent 单步结束；reason === 'stop' 表示本步 Agent 主动暂停（一次完整 Agent 输出边界） */
+/** Marks the end of one agent step; reason === 'stop' means the agent paused after a full output */
 export type StepFinishPart = {
   type: 'step-finish'
   reason?: string
@@ -161,7 +161,7 @@ export type CompactionPart = {
   id: string
   sessionID: string
   messageID: string
-  /** 部分版本会带摘要或占位文本 */
+  /** Optional summary/placeholder on some server builds */
   text?: string
 }
 
@@ -176,7 +176,7 @@ export type OcMessagePart =
   | ImagePart
   | CompactionPart
 
-// ===== 可视化：Agent Action =====
+// ===== Visualization: Agent Actions =====
 
 export type ActionType =
   | 'UserRequest'
@@ -195,45 +195,47 @@ export type ActionType =
 
 export type ActionStatus = 'pending' | 'running' | 'completed' | 'error'
 
-/** 单条可绘制动作（来自 message part 或 SSE 事件） */
+/** One drawable action derived from a message part or SSE envelope */
 export interface MappedAction {
   actionType: ActionType
   status: ActionStatus
-  /** 毫秒；无可靠时间戳时可为 0，由 UI 在 duration 模式下用下限代替 */
+  /** Milliseconds; falls back to UI floor in duration mode when timestamps are missing */
   durationMs: number
-  /** 按字符/4 的粗估 token */
+  /** Rough token estimate (~chars / 4) */
   tokenEstimate: number
-  /** 排序与时间轴 */
+  /** Sort key for the shared timeline */
   sortTime: number
   source: 'part' | 'sse-permission' | 'sse-session' | 'child-session'
-  /** 该动作所属会话 id（用于从任意 action 触发 fork） */
+  /** Owning session id (fork originates from any action referencing this) */
   sessionID?: string
   messageID?: string
   callID?: string
-  /** task/subagent 工具对应的子会话 id（若可解析） */
+  /** Child session spawned by task/subagent tools (when parseable) */
   childSessionID?: string
-  /** 并行区分键：优先 callID，其次 childSessionID */
+  /** Parallelism key: prefers callID, then childSessionID */
   parallelKey?: string
-  /** 来自子会话拉取的动作：对应子 session id */
+  /** Child-session rows merged after fetch */
   branchChildSessionID?: string
-  /** 父消息里触发 task 的 callID，用于分叉连线对齐 */
+  /** Parent task invocation id used to align fork connectors */
   parentTaskCallID?: string
-  /** 工具 wall-clock 区间（用于并行重叠判定）；仅 part 工具有值 */
+  /** Tool wall-clock interval for overlap detection (tool parts only) */
   toolWindow?: { startMs: number; endMs: number }
-  /** 同一 message 内时间重叠且 callID 同 stem 的并行组 */
+  /** Parallel siblings inside one assistant message (same call stem + overlapping time) */
   parallelGroupId?: string
-  /** 并行组内 lane（0..n-1），子会话动作继承父 task 的 lane */
+  /** Lane inside a parallel group (0..n-1); child-session rows inherit the parent task lane */
   parallelLaneIndex?: number
   partIndex?: number
+  /** Index into the **`OcMessage[]` slice** used to build this flow (`segmentMessages` in subtask cards ≠ global sidebar index — use **`messageID`** for linkage). */
   messageIndex?: number
-  /** 对应 `OcMessagePart.id`，用于在合并后的消息列表中唯一定位 part（避免 messageIndex 与数组不一致） */
+  /** Maps to `OcMessagePart.id` after merges (more stable than array indices alone) */
   partId?: string
   /**
-   * 分叉会话可视化：来自父支子会话快照、且位于切出点之后的「幽灵」动作（已不在新会话上下文中，仅灰色展示）。
+   * Fork visualization: rows sourced from a parent snapshot **after** the fork anchor — gray “ghost” trail no
+   * longer present in the forked session timeline.
    */
   forkGhost?: boolean
   /**
-   * Fork 对比单面板：0 共享前缀+锚点，1 父会话锚点后旧轨迹（灰），2 fork 后新轨迹。
+   * Fork comparison layering: 0 shared prefix incl. anchor, 1 parent-only ghost tail, 2 forked trajectory.
    */
   forkCompareRow?: 0 | 1 | 2
   detail?: string
@@ -246,8 +248,8 @@ export interface OcMessage {
   parts: OcMessagePart[]
 }
 
-// ===== Question 工具（SSE `question.asked` / POST `/question/{id}/reply`）=====
-// 服务端契约见 OpenCode SDK v2：`QuestionRequest`、`QuestionReplyData`（answers 为按题目顺序的 label 数组）
+// ===== Question tooling (SSE `question.asked`, POST `/question/{id}/reply`) =====
+// Server contract mirrors OpenCode SDK v2 QuestionRequest / QuestionReplyData (answers aligned with prompts)
 
 export type OcQuestionOption = {
   label: string
@@ -262,7 +264,7 @@ export type OcQuestionInfo = {
   custom?: boolean
 }
 
-/** `GET /question` 列表中的单条（用于与 tool part 的 messageID/callID 匹配 request id） */
+/** One row from GET /question — used to correlate tool parts via messageID/callID */
 export type OcPendingQuestionItem = {
   id: string
   sessionID: string
@@ -270,13 +272,13 @@ export type OcPendingQuestionItem = {
   tool?: { messageID?: string; callID?: string; messageId?: string; callId?: string }
 }
 
-/** 待用户作答的一条请求（来自 SSE question.asked） */
+/** Pending interactive question emitted over SSE (`question.asked`) */
 export type OcPendingQuestionRequest = {
   id: string
   sessionID: string
   questions: OcQuestionInfo[]
   tool?: { messageID: string; callID: string }
-  /** SSE 根字段，回复时必须带 x-opencode-directory */
+  /** Copied from SSE root; replies must include x-opencode-directory */
   directory?: string
 }
 
@@ -289,7 +291,7 @@ export interface FlowEvent {
   toolName?: string
 }
 
-/** 全局/工作区 SSE 中与动作相关、需与 message 合并的事件（OpenCode Bus） */
+/** Global/workspace SSE envelopes that should merge with REST message fetches (OpenCode bus) */
 export interface OcSseActionEvent {
   type: 'permission.asked' | 'session.compacted' | string
   time: number

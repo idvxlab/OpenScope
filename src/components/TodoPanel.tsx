@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type CSSProperties, type RefObject }
 import type { OcTodo } from '../types/opencode'
 import type { CanonicalTodo, LatestTodowriteBatchProgress } from '../utils/todoRegistry'
 
-/** 分区标题：与「已完成n项」同一套字号/字重/颜色 */
+/** Section header typography shared with completed counts */
 const sectionHeaderLabelStyle: CSSProperties = {
   fontSize: 11,
   fontWeight: 600,
@@ -11,16 +11,16 @@ const sectionHeaderLabelStyle: CSSProperties = {
 }
 
 interface TodoPanelProps {
-  /** 当前会话最新列表（含未完成与仍挂在列表上的已完成） */
+  /** Latest merged list (open + still-listed completed) */
   latestActive: CanonicalTodo[]
-  /** 已离开当前列表的「仅已完成」归档（按 id 去重） */
+  /** Completed items that left the active list (deduped by id) */
   archivedCompleted: CanonicalTodo[]
-  /** 最近一次 todowrite 快照的本批完成/总量及是否仍在推进 */
+  /** Completion ratio for the freshest todowrite batch */
   latestTodowriteBatchProgress: LatestTodowriteBatchProgress | null
   highlightTodoIds?: Set<string> | null
   onTodoClick?: (todo: OcTodo) => void
   listScrollRef?: RefObject<HTMLDivElement | null>
-  /** 选中子任务时递增，用于自动展开面板与对应分区 */
+  /** Increment when selecting a subtask — auto-expands relevant sections */
   todoPanelRevealGeneration?: number
 }
 
@@ -54,9 +54,9 @@ export default function TodoPanel({
   todoPanelRevealGeneration = 0,
 }: TodoPanelProps) {
   const [panelExpanded, setPanelExpanded] = useState(false)
-  /** 未完成（pending + in_progress） */
+  /** Open work (pending + in_progress) */
   const [openSectionExpanded, setOpenSectionExpanded] = useState(true)
-  /** 仍在当前列表上的已完成 */
+  /** Completed items still shown in the active list */
   const [doneOnListExpanded, setDoneOnListExpanded] = useState(false)
   const [historyExpanded, setHistoryExpanded] = useState(false)
 
@@ -70,15 +70,15 @@ export default function TodoPanel({
   const openTodos = latestActive.filter(t => t.status !== 'completed')
   const doneOnList = latestActive.filter(t => t.status === 'completed')
 
-  /** 顶栏右侧：随列表变化更新（暂无代办 / 进行中 / 已完成） */
-  const panelStatusLabel: '暂无代办' | '进行中' | '已完成' =
-    latestActive.length === 0 ? '暂无代办' : openTodos.length > 0 ? '进行中' : '已完成'
+  /** Header chips: empty list / in progress / all done */
+  const panelStatusLabel: 'None' | 'In progress' | 'All done' =
+    latestActive.length === 0 ? 'None' : openTodos.length > 0 ? 'In progress' : 'All done'
 
   const showBatchRatio = Boolean(
     latestTodowriteBatchProgress?.ongoing && latestTodowriteBatchProgress.total > 0
   )
 
-  // 仅响应「选中子任务」信号，避免 todos 列表刷新时重置用户折叠状态
+  // React only to subtask-selection signals so routine todo refreshes don't reset collapse state
   useLayoutEffect(() => {
     if (todoPanelRevealGeneration <= 0) return
 
@@ -192,7 +192,7 @@ export default function TodoPanel({
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
             <path d="M9 12l2 2 4-4" />
           </svg>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: '#171717', flexShrink: 0 }}>待办</span>
+          <span style={{ fontSize: '13px', fontWeight: 600, color: '#171717', flexShrink: 0 }}>Todos</span>
           <span
             style={{
               fontSize: '12px',
@@ -238,7 +238,7 @@ export default function TodoPanel({
               }}
             >
               <span style={sectionHeaderLabelStyle}>
-                进行中
+                In progress
                 {showBatchRatio && latestTodowriteBatchProgress ? (
                   <>
                     {' '}
@@ -262,7 +262,7 @@ export default function TodoPanel({
                   />
                 ))
               ) : (
-                <div style={{ fontSize: 12, color: '#B0B0B0', padding: '4px 6px 8px' }}>暂无未完成项</div>
+                <div style={{ fontSize: 12, color: '#B0B0B0', padding: '4px 6px 8px' }}>No open todos</div>
               ))}
           </div>
 
@@ -284,7 +284,7 @@ export default function TodoPanel({
                 }}
               >
                 <span style={sectionHeaderLabelStyle}>
-                  已完成{doneOnList.length}项
+                  Completed · {doneOnList.length}
                 </span>
                 <Chevron open={doneOnListExpanded} />
               </button>
@@ -319,7 +319,7 @@ export default function TodoPanel({
                 }}
               >
                 <span style={sectionHeaderLabelStyle}>
-                  历史已完成 <span style={{ fontWeight: 500 }}>({archivedCompleted.length})</span>
+                  Completed history <span style={{ fontWeight: 500 }}>({archivedCompleted.length})</span>
                 </span>
                 <Chevron open={historyExpanded} />
               </button>
@@ -434,7 +434,7 @@ function TodoItem({
             fontFamily: 'ui-monospace, monospace',
             wordBreak: 'break-all',
           }}
-          title="会话内稳定 id"
+          title="Stable session-scoped id"
         >
           id: {todo.id.slice(0, 8)}…
         </p>

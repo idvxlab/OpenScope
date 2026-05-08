@@ -1,7 +1,7 @@
 import * as d3 from 'd3'
 import type { ActionType } from '../types/opencode'
 
-/** 与 `ActionType` 联合顺序一致，供 D3 scheme 按索引对齐 */
+/** Matches `ActionType` union order — keeps D3 scheme lookups index-aligned */
 export const ACTION_TYPE_ORDER: readonly ActionType[] = [
   'UserRequest',
   'Think',
@@ -30,26 +30,26 @@ export type ActionTypePaletteId =
   | 'customUserA'
 
 export const ACTION_TYPE_PALETTE_LABELS: Record<ActionTypePaletteId, string> = {
-  pastelPaired7: 'Pastel 7（底色 + icon 配对）',
-  contrast: '高对比 · 手工',
-  spectrum: '色谱 · 手工（含柔和黄/玫红）',
-  d3PairedVivid7: 'd3 · schemePaired（亮色7分组）',
-  d3Paired: 'd3 · schemePaired（柔和版）',
-  d3PairedVivid: 'd3 · schemePaired（亮色版）',
-  d3Observable: 'd3 · schemeObservable10 + Tableau（柔和版）',
-  d3ObservableVivid: 'd3 · schemeObservable10 + Tableau（亮色版）',
-  customUserA: '用户色盘 A（10+补2）',
+  pastelPaired7: 'Pastel 7 — paired fill + icon',
+  contrast: 'High contrast — hand-tuned',
+  spectrum: 'Hue spread — hand-tuned (soft yellow / magenta)',
+  d3PairedVivid7: 'd3 schemePaired — vivid 7-group',
+  d3Paired: 'd3 schemePaired — soft',
+  d3PairedVivid: 'd3 schemePaired — vivid',
+  d3Observable: 'd3 Observable10 + Tableau — soft',
+  d3ObservableVivid: 'd3 Observable10 + Tableau — vivid',
+  customUserA: 'Custom palette A (10 base + 2 fill-ins)',
 }
 
 export type ActionTypeTriad = { fill: string; stroke: string; accent: string }
 
 /**
- * Pastel 7：底色与 icon 色 **直接使用下方常量字符串**，不经过 d3、透明度或 triadFromD3 变换。
- * stroke / accent 均等于 icon 色（ActionFlow 方块描边与 icon 同色）。
+ * Pastel 7 uses the literal fill/icon strings below — no d3 pass, no alpha, no `triadFromD3`.
+ * `stroke` / `accent` equal the icon color (ActionFlow block stroke matches the icon).
  *
- * 分组与旧版 `PAIRED_VIVID_7` / 「亮色 7 分组」一致（同类 action 共用一组颜色）：
- * | 组索引 | action types |
- * |--------|----------------|
+ * Grouping matches legacy `PAIRED_VIVID_7` / “vivid 7-group” (same hue bucket per action family):
+ * | Group | action types |
+ * |-------|--------------|
  * | 0 | Think, Plan |
  * | 1 | Clarify, Permission |
  * | 2 | Read, Shell, Search |
@@ -57,12 +57,12 @@ export type ActionTypeTriad = { fill: string; stroke: string; accent: string }
  * | 4 | Skill |
  * | 5 | Subagent |
  * | 6 | Compaction |
- * UserRequest 单独：白底 + 中性灰 icon（不参与 Pastel 7）。
+ * UserRequest is separate: white fill + neutral gray icon (outside Pastel 7).
  */
 const PASTEL7_FILL = ['#b3e2cd', '#fdcdac', '#cbd5e8', '#f4cae4', '#e6f5c9', '#fff2ae', '#f1e2cc'] as const
 const PASTEL7_ICON = ['#66c2a5', '#fc8d62', '#8da0cb', '#e78ac3', '#a6d854', '#ffd92f', '#e5c494'] as const
 
-/** 每组索引 0..6，UserRequest 用 -1 表示单独着色 */
+/** Group index 0..6; UserRequest uses -1 for standalone styling */
 const PASTEL7_GROUP_INDEX: Record<ActionType, number> = {
   UserRequest: -1,
   Think: 0,
@@ -72,10 +72,10 @@ const PASTEL7_GROUP_INDEX: Record<ActionType, number> = {
   Read: 2,
   Shell: 2,
   Search: 2,
-  Write: 3,
-  Response: 3,
-  Skill: 4,
-  Subagent: 5,
+  Write: 4,
+  Response: 4,
+  Skill: 5,
+  Subagent: 3,
   Compaction: 6,
 }
 
@@ -94,7 +94,7 @@ function buildPastelPaired7(): Record<ActionType, ActionTypeTriad> {
   return out
 }
 
-/** 高对比手工盘：描边更深，块之间更易区分 */
+/** High-contrast hand-tuned palette — darker strokes so blocks separate clearly */
 const CONTRAST: Record<ActionType, ActionTypeTriad> = {
   UserRequest: { fill: '#FFFFFF', stroke: '#3D4F63', accent: '#3D4F63' },
   Think: { fill: '#E8E6FF', stroke: '#6350C9', accent: '#342A78' },
@@ -111,7 +111,7 @@ const CONTRAST: Record<ActionType, ActionTypeTriad> = {
   Compaction: { fill: '#E1ECF6', stroke: '#467FA8', accent: '#284A61' },
 }
 
-/** 色谱手工盘：色相拉开，含柔和黄/玫红（与 pending / error 通过低饱和区分） */
+/** Hue-spread hand-tuned palette with soft yellow / magenta tones, kept low-sat vs pending/error */
 const SPECTRUM: Record<ActionType, ActionTypeTriad> = {
   UserRequest: { fill: '#FFFFFF', stroke: '#3D4F63', accent: '#3D4F63' },
   Think: { fill: '#EEE7FF', stroke: '#7B61D4', accent: '#4A3494' },
@@ -129,8 +129,8 @@ const SPECTRUM: Record<ActionType, ActionTypeTriad> = {
 }
 
 /**
- * 由 d3 取色后转为 UI 用三色：fill 高明低饱、stroke/accent 加深，
- * 对红/黄色相额外降饱和，避免与 error（红）和 pending（黄）混淆。
+ * Map a d3 scheme swatch into UI `{fill,stroke,accent}`: bright low-sat fill, deeper strokes.
+ * Extra desaturation on red/yellow hues so we do not collide with error (red) or pending (amber).
  */
 function triadFromD3SchemeColor(hex: string): ActionTypeTriad {
   const base = d3.color(hex)
@@ -145,14 +145,14 @@ function triadFromD3SchemeColor(hex: string): ActionTypeTriad {
   let accentS = Math.min(hsl.s * 0.55 + 0.1, 0.58)
   let accentL = 0.34
 
-  // 红区：error 常用浅红底 — 压低饱和、略提亮
+  // Red band: lighten + desaturate vs error reds
   if ((h >= 0 && h < 32) || h >= 348) {
     fillS *= 0.55
     strokeS *= 0.6
     accentS *= 0.65
     fillL = Math.max(fillL, 0.9)
   }
-  // 黄区：pending 黄框 — 色相略推向琥珀、降低饱和
+  // Yellow band: nudge hue toward amber, lower saturation vs pending yellows
   if (h >= 38 && h < 72) {
     hsl.h = h + 6
     fillS *= 0.5
@@ -166,7 +166,7 @@ function triadFromD3SchemeColor(hex: string): ActionTypeTriad {
   return { fill, stroke, accent }
 }
 
-/** d3 原色更亮的版本：保留辨识度，不做“发灰”压暗。 */
+/** Brighter d3-derived variant — preserves chroma instead of muddy darkening */
 function triadFromD3SchemeColorVivid(hex: string): ActionTypeTriad {
   const base = d3.color(hex)
   if (!base) return { fill: '#F0F0F0', stroke: '#888888', accent: '#333333' }
@@ -288,11 +288,11 @@ const PALETTES: Record<ActionTypePaletteId, Record<ActionType, ActionTypeTriad>>
   d3ObservableVivid: buildD3Observable(true),
   customUserA: (() => {
     /**
-     * 用户给定 10 色 + 补充 2 色（确保 12 个 ActionType 全覆盖）
-     * 给定：
+     * User-provided 10 swatches + 2 fill-ins so all 12 `ActionType`s are covered.
+     * Base swatches:
      *  #BEEB9F #79D320 #ADD5F7 #3498DB #00305A
      *  #FFF176 #FA9600 #8B63A6 #9C27B0 #441A19
-     * 补充：
+     * Extra:
      *  #00BFA5 #F06292
      */
     const baseByType: Record<ActionType, string> = {

@@ -14,27 +14,31 @@ import {
   findRequestIdFromSsePending,
   parseQuestionInputQuestions,
 } from '../utils/questionPart'
+import { transcriptAnchorKeyForPart } from '../utils/actionMapping'
 
 interface MessageBubbleProps {
   message: OcMessage
+  staleToolCallIds: Set<string>
+  /** Wall clock for tool status when computing anchor keys */
+  transcriptAnchorNowMs: number
   isLastInTurn: boolean
-  /** 多目录实例：提交 question 答案时需要 */
+  /** Directory header for POST /question replies in multi-workspace setups */
   sessionDirectory?: string
-  /** SSE `question.asked` 的待答（含 request id），用于内联提交，优先于 GET /question */
+  /** Pending question from SSE (`question.asked`) — carries request id for inline submit */
   ssePendingQuestion?: OcPendingQuestionRequest | null
-  /** 内联 question 提交成功后刷新消息列表 */
+  /** Refresh transcript after inline question answers */
   onQuestionAnswered?: () => Promise<void>
 }
 
-/** 简单 Markdown 渲染（统一字号，无斜体） */
+/** Minimal markdown pass (fixed font size, italic disabled) */
 function renderMarkdown(text: string): string {
   if (!text) return ''
   return text
-    // 代码块
+    // fenced code
     .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre style="background:#F5F5F5;padding:8px;border-radius:4px;margin:6px 0;font-family:IBM Plex Mono,monospace;font-size:11px"><code>$2</code></pre>')
-    // 行内代码
+    // inline code
     .replace(/`([^`]+)`/g, '<code style="background:#F5F5F5;padding:1px 3px;border-radius:2px;font-family:IBM Plex Mono,monospace;font-size:11px">$1</code>')
-    // 表格
+    // Tables
     .replace(/(\|.+\|)\n(\|[-:| ]+\|)\n((?:\|.+\|\n?)*)/g, (_match, header, _divider, rows) => {
       const headerCells = header.split('|').filter((c: string) => c.trim())
       const rowLines = rows.trim().split('\n')
@@ -52,19 +56,19 @@ function renderMarkdown(text: string): string {
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     // *italic* -> just text (no italic)
     .replace(/\*(.+?)\*/g, '$1')
-    // Headers: 统一渲染为粗体文字
+    // Headers collapse to bold
     .replace(/^#{1,6} (.+)$/gm, '<strong>$1</strong>')
     // bullet lists
     .replace(/^- (.+)$/gm, '<div style="margin-left:16px">• $1</div>')
     // numbered lists
     .replace(/^\d+\. (.+)$/gm, '<div style="margin-left:16px">$1</div>')
-    // 段落
+    // Paragraph breaks
     .replace(/\n\n/g, '</p><p style="margin:6px 0">')
-    // 单换行
+    // Soft line breaks
     .replace(/\n/g, '<br/>')
 }
 
-/** 用户消息：OpenCode 常把正文放在 parts.text，info.content 可能为空（含 harness 前缀时由 strip 处理） */
+/** User bubbles: payload usually lives under text parts while `info.content` may stay empty */
 function userMessageDisplayText(message: OcMessage): string {
   const c = message.info.content?.trim()
   if (c) return message.info.content!
@@ -76,13 +80,15 @@ function userMessageDisplayText(message: OcMessage): string {
   return fromParts
 }
 
-/** 对话区展示用用户正文：统一去掉 harness 引导，与 HARNESS_GUIDANCE_ENABLED / 历史分隔符无关 */
+/** Chat column strips harness preamble regardless of toggle state */
 function userMessageBodyForDisplay(message: OcMessage): string {
   return stripHarnessGuidanceForDisplay(userMessageDisplayText(message))
 }
 
 export default function MessageBubble({
   message,
+  staleToolCallIds,
+  transcriptAnchorNowMs,
   isLastInTurn,
   sessionDirectory,
   ssePendingQuestion,
@@ -101,7 +107,11 @@ export default function MessageBubble({
       {parts.map((part, idx) => (
         <PartView
           key={idx}
+          message={message}
           part={part}
+          partIndex={idx}
+          staleToolCallIds={staleToolCallIds}
+          transcriptAnchorNowMs={transcriptAnchorNowMs}
           sessionDirectory={sessionDirectory}
           ssePendingQuestion={ssePendingQuestion}
           onQuestionAnswered={onQuestionAnswered}
@@ -143,7 +153,7 @@ function UserMessage({ message }: { message: OcMessage }) {
           wordBreak: 'break-word',
         }}
       >
-        {content || <span style={{ color: '#BBB' }}>（无文本内容）</span>}
+        {content || <span style={{ color: '#BBB' }}>No text payload</span>}
       </div>
       {/* Copy button */}
       {showCopy && (
@@ -193,48 +203,85 @@ function AgentInfo({ info }: { info: OcMessageInfo }) {
 }
 
 function PartView({
+  message,
   part,
+  partIndex,
+  staleToolCallIds,
+  transcriptAnchorNowMs,
   sessionDirectory,
   ssePendingQuestion,
   onQuestionAnswered,
 }: {
+  message: OcMessage
   part: OcMessagePart
+  partIndex: number
+  staleToolCallIds: Set<string>
+  transcriptAnchorNowMs: number
   sessionDirectory?: string
   ssePendingQuestion?: OcPendingQuestionRequest | null
   onQuestionAnswered?: () => Promise<void>
 }) {
   switch (part.type) {
-    case 'text':
+    case 'text': {
+      const ak = transcriptAnchorKeyForPart(
+        message,
+        part,
+        partIndex,
+        transcriptAnchorNowMs,
+        staleToolCallIds,
+      )
       return (
         <div
+          data-transcript-action-key={ak ?? undefined}
           style={{ fontSize: 12, lineHeight: 1.6, color: '#333' }}
           dangerouslySetInnerHTML={{ __html: renderMarkdown(part.text || '') }}
         />
       )
+    }
 
-    case 'reasoning':
+    case 'reasoning': {
+      const ak = transcriptAnchorKeyForPart(
+        message,
+        part,
+        partIndex,
+        transcriptAnchorNowMs,
+        staleToolCallIds,
+      )
       return (
-        <div style={{
-          fontSize: 12,
-          color: '#999',
-          margin: '4px 0',
-          padding: '6px 10px',
-          background: '#FAFAFA',
-          borderRadius: '4px',
-          lineHeight: 1.5,
-        }}>
+        <div
+          data-transcript-action-key={ak ?? undefined}
+          style={{
+            fontSize: 12,
+            color: '#999',
+            margin: '4px 0',
+            padding: '6px 10px',
+            background: '#FAFAFA',
+            borderRadius: '4px',
+            lineHeight: 1.5,
+          }}
+        >
           {part.text}
         </div>
       )
+    }
 
     case 'tool': {
+      const ak = transcriptAnchorKeyForPart(
+        message,
+        part,
+        partIndex,
+        transcriptAnchorNowMs,
+        staleToolCallIds,
+      )
       return (
-        <ToolCallView
-          part={part}
-          sessionDirectory={sessionDirectory}
-          ssePendingQuestion={ssePendingQuestion}
-          onQuestionAnswered={onQuestionAnswered}
-        />
+        <div data-transcript-action-key={ak ?? undefined} style={{ margin: '4px 0' }}>
+          <ToolCallView
+            part={part}
+            sessionDirectory={sessionDirectory}
+            ssePendingQuestion={ssePendingQuestion}
+            onQuestionAnswered={onQuestionAnswered}
+          />
+        </div>
       )
     }
 
@@ -261,22 +308,33 @@ function PartView({
         : null
       return (
         <div style={{ fontSize: 12, color: '#888', margin: '4px 0' }}>
-          {url ? <img src={url} alt="image" style={{ maxWidth: '150px', borderRadius: '4px' }} /> : '[图片]'}
+          {url ? <img src={url} alt="image" style={{ maxWidth: '150px', borderRadius: '4px' }} /> : '[image]'}
         </div>
       )
     }
 
-    case 'compaction':
+    case 'compaction': {
+      const ak = transcriptAnchorKeyForPart(
+        message,
+        part,
+        partIndex,
+        transcriptAnchorNowMs,
+        staleToolCallIds,
+      )
       return (
-        <div style={{
-          fontSize: 10,
-          color: '#C62828',
-          margin: '4px 0',
-          fontFamily: 'var(--font-family-mono)',
-        }}>
+        <div
+          data-transcript-action-key={ak ?? undefined}
+          style={{
+            fontSize: 10,
+            color: '#C62828',
+            margin: '4px 0',
+            fontFamily: 'var(--font-family-mono)',
+          }}
+        >
           [compaction]
         </div>
       )
+    }
 
     case 'step-start':
     case 'step-end':
@@ -359,7 +417,7 @@ function ToolCallView({
   }, [part.id, hasError, hasOutput])
 
   return (
-    <div style={{ margin: '4px 0', border: '1px solid #E8E8E8', borderRadius: '6px', overflow: 'hidden' }}>
+    <div style={{ border: '1px solid #E8E8E8', borderRadius: '6px', overflow: 'hidden' }}>
       <div
         onClick={() => hasDetails && setExpanded(!expanded)}
         title={errorTooltip}
@@ -529,7 +587,6 @@ function QuestionInlineForm({
   const resolveRequestId = async (): Promise<string | undefined> => {
     const fromSse = findRequestIdFromSsePending(ssePendingQuestion, part)
     if (fromSse) {
-      console.log('[QuestionInlineForm] 使用 SSE question.asked 的 request id', fromSse)
       return fromSse
     }
     const delaysMs = [0, 200, 500, 1000]
@@ -540,23 +597,17 @@ function QuestionInlineForm({
         const list = await getPendingQuestions(directory, { sessionID: part.sessionID })
         const id = findQuestionRequestIdForToolPart(list, part)
         if (id) return id
-      } catch (e) {
-        console.warn('[QuestionInlineForm] getPendingQuestions', e)
+      } catch {
+        /* retry */
       }
     }
-    console.warn('[QuestionInlineForm] 无法匹配 request id', {
-      messageID: part.messageID,
-      callID: part.callID,
-      sessionID: part.sessionID,
-      directory,
-    })
     return undefined
   }
 
   const submit = async () => {
     const answers = buildAnswers()
     if (!answers) {
-      window.alert('请为每道题至少选择一项，或在自定义栏填写答案。')
+      window.alert('Pick at least one answer per prompt, or fill the custom field where allowed.')
       return
     }
     setSubmitting(true)
@@ -564,15 +615,14 @@ function QuestionInlineForm({
       const requestId = await resolveRequestId()
       if (!requestId) {
         window.alert(
-          '无法匹配 question 请求 ID。请确认 OpenCode 支持 GET /question，且当前目录与会话一致。',
+          'Could not correlate this question request. Verify OpenCode exposes GET /question and the workspace directory matches.'
         )
         return
       }
       await replyToQuestion(requestId, answers, directory)
       await onDone?.()
-    } catch (e) {
-      console.error('[QuestionInlineForm] reply', e)
-      window.alert('提交答案失败，请确认服务端已实现 POST /question/{requestID}/reply。')
+    } catch {
+      window.alert('Submission failed — ensure POST /question/{requestID}/reply exists on your server.')
     } finally {
       setSubmitting(false)
     }
@@ -586,9 +636,8 @@ function QuestionInlineForm({
         await rejectQuestion(requestId, directory)
       }
       await onDone?.()
-    } catch (e) {
-      console.error('[QuestionInlineForm] reject', e)
-      window.alert('跳过失败。')
+    } catch {
+      window.alert('Unable to dismiss this question.')
     } finally {
       setSubmitting(false)
     }
@@ -653,7 +702,7 @@ function QuestionInlineForm({
             </div>
             {q.custom !== false && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 10, color: '#999', marginBottom: 4 }}>补充说明（可选）</div>
+                <div style={{ fontSize: 10, color: '#999', marginBottom: 4 }}>Notes (optional)</div>
                 <input
                   type="text"
                   value={customTexts[qi] ?? ''}
@@ -666,7 +715,7 @@ function QuestionInlineForm({
                       return next
                     })
                   }}
-                  placeholder="仅选项不足以说明时可填写"
+                  placeholder="Add context when the preset options are not enough"
                   style={{
                     width: '100%',
                     fontSize: 11,
@@ -696,7 +745,7 @@ function QuestionInlineForm({
             cursor: submitting ? 'not-allowed' : 'pointer',
           }}
         >
-          跳过
+          Skip
         </button>
         <button
           type="button"
@@ -712,7 +761,7 @@ function QuestionInlineForm({
             cursor: submitting ? 'not-allowed' : 'pointer',
           }}
         >
-          {submitting ? '提交中…' : '提交答案'}
+          {submitting ? 'Sending…' : 'Submit'}
         </button>
       </div>
     </div>

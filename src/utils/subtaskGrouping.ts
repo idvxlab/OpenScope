@@ -26,7 +26,7 @@ function partIsStepFinishStop(part: OcMessagePart): boolean {
   return raw.reason === 'stop'
 }
 
-/** 本条 assistant 含 step-finish 且 reason === stop（Agent 本步回复终止） */
+/** True when this assistant row includes step-finish with reason === stop (Agent ended this step). */
 export function messageHasAgentStepFinishStop(message: OcMessage): boolean {
   if (message.info.role !== 'assistant') return false
   return message.parts.some(partIsStepFinishStop)
@@ -86,7 +86,7 @@ type ToolStateWithMeta = ToolPart['state'] & {
   metadata?: { todos?: unknown }
 }
 
-/** 从单条 todowrite tool part 取列表：input.todos → metadata.todos → output JSON */
+/** Todo list resolution order for one todowrite tool part: input.todos → metadata.todos → output JSON */
 export function parseTodowriteTodosFromToolPart(part: ToolPart): OcTodo[] | null {
   const input = part.state?.input
   const fromInput = extractTodosArray(input?.todos)
@@ -111,7 +111,7 @@ export function parseTodowriteTodosFromToolPart(part: ToolPart): OcTodo[] | null
   return null
 }
 
-/** 从 assistant message 中取第一条 todowrite 的 todos */
+/** Parse first todowrite todos from an assistant message */
 export function parseTodowriteTodosFromMessage(message: OcMessage): OcTodo[] | null {
   if (message.info.role !== 'assistant') return null
   for (const p of message.parts) {
@@ -123,14 +123,14 @@ export function parseTodowriteTodosFromMessage(message: OcMessage): OcTodo[] | n
   return null
 }
 
-/** 优先 id，否则规范化 content，用于快照间对齐 */
+/** Prefer id, else normalized content string, for aligning snapshots across time */
 export function todoMatchKey(t: OcTodo): string {
   if (t.id?.trim()) return `id:${t.id.trim()}`
   return `c:${t.content.trim()}`
 }
 
 /**
- * 相对上一次快照，同一 todo（优先 id）下由 **非 completed → completed** 的项
+ * Items whose same todo key (prefer id) moved **non-completed → completed** vs the previous snapshot.
  */
 export function diffTodosNewlyCompleted(prev: OcTodo[] | null, next: OcTodo[]): OcTodo[] {
   if (!prev || prev.length === 0) return []
@@ -150,7 +150,7 @@ export function diffTodosNewlyCompleted(prev: OcTodo[] | null, next: OcTodo[]): 
 }
 
 /**
- * 仅本段 **新变为 completed** 的条目 id，用于 Todo 面板只高亮对应行（不用整段快照里的全部 todo）。
+ * Todo ids newly completed in **this segment** only — Todo panel highlights these rows instead of every item in the snapshot.
  */
 function linkedTodoIdsForHighlight(newly: OcTodo[]): string[] {
   const s = new Set<string>()
@@ -160,38 +160,38 @@ function linkedTodoIdsForHighlight(newly: OcTodo[]): string[] {
   return [...s]
 }
 
-/** 列表非空且全部 completed */
+/** Non-empty list and every item is completed */
 function allTodosCompleted(s: OcTodo[]): boolean {
   return s.length > 0 && s.every(t => t.status === 'completed')
 }
 
 /**
- * - **planning**：尚无列表 → 第一次写出列表；或「快照已全部完成」→ 下一次 todowrite（**含**该条 message）。
- * - **execution**：上一条 todowrite 快照里**仍有未完成**时，到下一次 todowrite 之间的纯 assistant（**不含**两条 todowrite）。
- * - **wrap_up**：最后一条 todowrite 快照已全部完成，且其后仍有 assistant（收尾输出）。
+ * - **planning**: no list yet → first list write; or prior snapshot all done → next todowrite (**includes** that message).
+ * - **execution**: previous todowrite snapshot still has pending work → pure assistant up to the next todowrite (**excludes** both todowrite rows).
+ * - **wrap_up**: last todowrite snapshot is all completed, yet more assistant output follows (closing reply).
  */
 export type SubtaskPhase = 'planning' | 'execution' | 'wrap_up'
 
 export interface AssistantSubtask {
   subtask_id: string
   phase: SubtaskPhase
-  /** 本子任务语义上的段末列表（ planning 为段末 todowrite 快照；execution 为后一条 todowrite；wrap_up 为 fallback ） */
+  /** Segment-end todo list by phase: planning = trailing todowrite snapshot; execution = following todowrite; wrap_up = fallback */
   todos: OcTodo[]
   todosNewlyCompleted: OcTodo[]
   /**
-   * 本段内 **新完成** 的 todo id（与 `todosNewlyCompleted` 一致，非整份 `todos`）。
-   * 用于点亮 Todo 面板中的**具体条目**；为空则 execution 也退回消息高亮。
+   * Todo ids completed **inside this segment** (matches `todosNewlyCompleted`, not the full `todos` list).
+   * Drives per-row highlights in the Todo panel; when empty, execution falls back to message highlighting.
    */
   linkedTodoIds: string[]
-  /** 本子任务起点携带的 user message；用于把用户输入画成 UserRequest action。 */
+  /** User message indices at this subtask start — used to render UserRequest actions. */
   userMessageIndices: number[]
   assistantMessageIndices: number[]
 }
 
 /**
- * 同一子任务段在 assistant 消息增多时仍保持同一 id（仅用段首 assistant 的 message id），
- * 避免仅因追加回复就换 key / 被误认为新开子任务。user 消息只负责开启新的 range，
- * range 内仍由 todowrite 完成 diff 驱动。
+ * Subtask id stays stable as more assistant turns append (keyed by the first assistant message id in the segment)
+ * so we do not treat continuations as brand-new subtasks. User messages only open a new range; inside the range
+ * segmentation is still driven by todowrite completion diffs.
  */
 function buildSubtaskId(indices: number[], messages: OcMessage[]): string {
   if (indices.length === 0) return 'subtask-empty'
@@ -232,8 +232,8 @@ function resolveSnapshotForSegment(
 }
 
 /**
- * 按 user message 切出 assistant range：user 结束上一段，并作为下一段的起点 action。
- * range 内仍沿用原有 todo 快照完成关系做细分。
+ * Split assistant indices by user turns: a user ends the prior segment and seeds the next UserRequest action.
+ * Todo snapshot completion rules still refine segments inside each range.
  */
 function assistantRangesSplitByUser(
   messages: OcMessage[]
@@ -275,7 +275,7 @@ export function groupAssistantSubtasks(
   messages: OcMessage[],
   options?: {
     todosAfterMessageIndex?: (index: number) => OcTodo[] | undefined
-    /** 每条 message 下标上的「已分配 id」的 canonical 列表；优先于原始解析 */
+    /** Canonical todo list assigned at each message index — wins over raw tool parsing */
     canonicalTodosAtMessageIndex?: (index: number) => OcTodo[] | undefined
     fallbackSessionTodos?: OcTodo[]
   }
@@ -326,11 +326,11 @@ export function groupAssistantSubtasks(
     }
 
     /**
-     * 子任务切分：完成驱动 + user 边界；这里仅遍历当前 user range 内的 assistant 下标。
-     * - 第一次 todowrite 起进入执行段并持续累计；
-     * - pending -> in_progress 不切段；
-     * - 仅当 todowrite 快照 diff 出现「新完成」时才在该 tw 处收口一段；
-     * - 收口后从下一条 assistant 起累计下一段（中间插入的 user 消息不改变分段逻辑）。
+     * Subtask splits: completion-driven within a user-scoped assistant range.
+     * - After the first todowrite we enter execution and keep accumulating.
+     * - pending → in_progress does **not** cut a new segment.
+     * - Only when a todowrite snapshot diff shows newly completed items do we close the segment at that tw row.
+     * - The next segment starts at the following assistant index (extra user rows inside the range do not change this rule).
      */
     let lastTodowriteSnapshot: OcTodo[] | null = null
     const snapAtTw = new Map<number, OcTodo[]>()

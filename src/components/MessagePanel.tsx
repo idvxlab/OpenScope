@@ -1,4 +1,4 @@
-import { useState, useEffect, type RefObject } from 'react'
+import { useState, useEffect, useMemo, type RefObject } from 'react'
 import type { OcMessage, OcPendingQuestionRequest, OcTodo } from '../types/opencode'
 import type { CanonicalTodo, LatestTodowriteBatchProgress } from '../utils/todoRegistry'
 import MessageBubble from './MessageBubble'
@@ -6,16 +6,18 @@ import TodoPanel from './TodoPanel'
 import MessageInput, { type MessageSendPayload } from './MessageInput'
 import QuestionPromptPanel from './QuestionPromptPanel'
 import { actionFlowPalette } from '../styles/actionFlowPalette'
+import type { OcComposerModelOption } from '../services/opencodeApi'
 import { messagesHaveOpenQuestionWithInput } from '../utils/questionPart'
+import { collectStaleToolCallIDs } from '../utils/actionMapping'
 
 interface MessagePanelProps {
   messages: OcMessage[]
   latestTodos: CanonicalTodo[]
   archivedTodos: CanonicalTodo[]
-  /** 最近一条 todowrite 快照对应的「本批」进度；无快照时 null */
+  /** Progress for the batch tied to the latest todowrite snapshot; null when no snapshot exists */
   latestTodowriteBatchProgress: LatestTodowriteBatchProgress | null
   loading: boolean
-  /** 已发送用户消息，正在轮询等待助手回复（SSE 可能未及时更新界面） */
+  /** User message sent; polling until assistant reply arrives (SSE may lag) */
   waitingForAssistantReply?: boolean
   sessionId: string
   sessionTitle?: string
@@ -23,28 +25,34 @@ interface MessagePanelProps {
   onSendMessage: (payload: MessageSendPayload) => Promise<void>
   onAbortMessage?: () => Promise<void>
   aborting?: boolean
-  /** 可滚动消息列表容器 ref（供联动连线计算） */
+  /** Scrollable message column ref (connector geometry) */
   messageListScrollRef?: RefObject<HTMLDivElement | null>
-  /** Todo 列表面板滚动容器（与子任务连线时定位高亮行） */
+  /** Todo list scroll container (highlight alignment) */
   todoPanelScrollRef?: RefObject<HTMLDivElement | null>
-  /** 与高亮子任务关联的消息下标（planning / wrap_up 等） */
+  /** Message indices highlighted for the active subtask */
   highlightMessageIndices?: Set<number> | null
-  /** 与高亮子任务关联的 todo id（execution 时优先于消息高亮） */
+  /** Todo ids highlighted during execution phase */
   highlightTodoIds?: Set<string> | null
-  /** 选中子任务时递增，驱动待办面板自动展开到对应分区 */
+  /** Incremented on subtask selection to auto-expand matching todo sections */
   todoPanelRevealGeneration?: number
   onTodoClick?: (todo: OcTodo) => void
-  /** 重命名当前会话标题（PATCH OpenCode） */
+  /** PATCH session title via OpenCode */
   onSessionTitleCommit?: (title: string) => Promise<void>
-  /** OpenCode question 工具：待作答请求（来自 SSE question.asked） */
+  /** OpenCode question channel requests (SSE `question.asked`) */
   pendingQuestion?: OcPendingQuestionRequest | null
   onQuestionReply?: (answers: string[][]) => Promise<void>
   onQuestionReject?: () => Promise<void>
   questionSubmitting?: boolean
-  /** 当前会话工作区目录（x-opencode-directory），question 内联提交需要 */
+  /** Workspace directory header (`x-opencode-directory`) for inline submits */
   sessionDirectory?: string
-  /** 消息内 question 工具提交成功后刷新列表 */
+  /** Bubble-level question completion hook */
   onQuestionAnswered?: () => Promise<void>
+  composerModelRef?: string
+  onComposerModelRefChange?: (ref: string) => void
+  composerModelOptions?: OcComposerModelOption[]
+  composerModelsLoading?: boolean
+  composerModelsError?: string | null
+  envBootstrapModel?: string | null
 }
 
 export default function MessagePanel({
@@ -56,6 +64,7 @@ export default function MessagePanel({
   waitingForAssistantReply = false,
   sessionId,
   sessionTitle,
+  onRefresh,
   onSendMessage,
   onAbortMessage,
   aborting,
@@ -72,13 +81,20 @@ export default function MessagePanel({
   questionSubmitting,
   sessionDirectory,
   onQuestionAnswered,
+  composerModelRef = '',
+  onComposerModelRefChange,
+  composerModelOptions = [],
+  composerModelsLoading = false,
+  composerModelsError = null,
+  envBootstrapModel = null,
 }: MessagePanelProps) {
+  void onRefresh
   const hasInlineQuestion = messagesHaveOpenQuestionWithInput(messages)
   const blockComposerForQuestion =
     hasInlineQuestion ||
     Boolean(pendingQuestion && pendingQuestion.sessionID === sessionId)
 
-  // 获取当前 agent 和模型信息（从最后一条 assistant message）
+  // Derive composer metadata from latest assistant row
   const lastAssistantMsg = [...messages].reverse().find(m => m.info.role === 'assistant')
   const agentName = lastAssistantMsg?.info.agent || null
   const modelName = lastAssistantMsg?.info.model?.modelID || null
@@ -93,10 +109,13 @@ export default function MessagePanel({
       if (p.type !== 'tool') return false
       const s = p.state?.status
       if (s !== 'running' && s !== 'pending') return false
-      // 若已进入后续 assistant turn，该 running/pending 视为失效，不再显示终止按钮
+      // Stale pending once a newer assistant message exists — hide abort affordance
       return !hasLaterAssistant
     })
   })
+
+  const staleToolCallIds = useMemo(() => collectStaleToolCallIDs(messages), [messages])
+  const transcriptAnchorNowMs = Date.now()
 
   return (
     <div
@@ -152,9 +171,9 @@ export default function MessagePanel({
               flexShrink: 0,
             }}
           />
-          <span style={{ fontWeight: 600 }}>等待模型回复中…</span>
+          <span style={{ fontWeight: 600 }}>Waiting for the model…</span>
           <span style={{ color: '#64748b', fontWeight: 400 }}>
-            已自动轮询刷新；若长时间无内容，请查看 OpenCode 终端日志或模型是否排队。
+            Polling in the background — if nothing appears, check OpenCode logs or upstream queue delays.
           </span>
         </div>
       )}
@@ -173,11 +192,11 @@ export default function MessagePanel({
       >
         {loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', padding: '32px', color: '#888', fontSize: 12 }}>
-            加载中...
+            Loading…
           </div>
         ) : messages.length === 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888', fontSize: 12 }}>
-            选择一个 Session 开始对话
+            Pick a session to start chatting
           </div>
         ) : (
           messages.map((msg, idx) => {
@@ -199,6 +218,8 @@ export default function MessagePanel({
               >
                 <MessageBubble
                   message={msg}
+                  staleToolCallIds={staleToolCallIds}
+                  transcriptAnchorNowMs={transcriptAnchorNowMs}
                   isLastInTurn={isLastMessageInTurn(messages, idx)}
                   sessionDirectory={sessionDirectory}
                   ssePendingQuestion={
@@ -212,7 +233,7 @@ export default function MessagePanel({
         )}
       </div>
 
-      {/* Todo Panel：历次快照 + 当前 API 兜底 */}
+      {/* Todo snapshots + API fallback */}
       {(latestTodos.length > 0 || archivedTodos.length > 0) && (
         <div style={{ flexShrink: 0 }}>
           <TodoPanel
@@ -240,7 +261,7 @@ export default function MessagePanel({
         />
       )}
 
-      {/* Message Input (直接贴着 todo 或消息) */}
+      {/* Composer */}
       <div style={{ flexShrink: 0 }}>
         <MessageInput
           onSend={onSendMessage}
@@ -251,6 +272,12 @@ export default function MessagePanel({
           sessionId={sessionId}
           agentName={agentName}
           modelName={modelName}
+          composerModelRef={composerModelRef}
+          onComposerModelRefChange={onComposerModelRefChange}
+          composerModelOptions={composerModelOptions}
+          composerModelsLoading={composerModelsLoading}
+          composerModelsError={composerModelsError}
+          envBootstrapModel={envBootstrapModel}
         />
       </div>
     </div>
@@ -278,7 +305,7 @@ function EditableSessionTitle({
     if (!editing) setDraft(title ?? '')
   }, [title, editing])
 
-  const display = title?.trim() ? title : '未命名 Session'
+  const display = title?.trim() ? title : 'Untitled session'
 
   const startEdit = () => {
     if (!canEdit) return
@@ -306,8 +333,7 @@ function EditableSessionTitle({
     try {
       await onCommit(next)
       setEditing(false)
-    } catch (e) {
-      console.error('[EditableSessionTitle]', e)
+    } catch {
     } finally {
       setSaving(false)
     }
@@ -371,7 +397,7 @@ function EditableSessionTitle({
         color: '#171717',
         cursor: 'pointer',
       }}
-      title="点击修改标题"
+      title="Click to rename"
     >
       {display}
     </span>

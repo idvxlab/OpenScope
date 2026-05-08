@@ -57,7 +57,7 @@ export default function ActionAnalysisModal({ action, onClose }: Props) {
   }
 
   const hint =
-    '对照状态与消息边界，便于判断卡住、未回流或错因；需要分支实验请用 Fork session。'
+    'Cross-check status and transcript boundaries for stuck calls, missing tool results, or errors; fork the session when you need isolated experiments.'
 
   return (
     <div style={overlay} onMouseDown={onClose}>

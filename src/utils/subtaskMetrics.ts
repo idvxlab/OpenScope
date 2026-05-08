@@ -2,9 +2,9 @@ import type { OcMessage, OcMessagePart, ToolPart } from '../types/opencode'
 import type { AssistantSubtask } from './subtaskGrouping'
 import { parseWebsearchTitleQuery } from './actionTooltipMapping'
 
-/** 与 OpenCode 上下文面板一致的「单条 message token 合计」：input+output+reasoning+cache（见 opencode-context-panel.md） */
+/** Matches OpenCode context-panel semantics: per-message token total = input + output + reasoning + cache (see opencode-context-panel.md). */
 /**
- * 从「上一子任务最后一条 assistant 之后」到「本子任务最后一条 assistant」下标范围内，user message 条数。
+ * Number of user messages between the assistant after the previous subtask window and this subtask's last assistant index.
  */
 export function countUserMessagesInSubtaskWindow(
   messages: OcMessage[],
@@ -42,7 +42,7 @@ export interface SubtaskTokenBreakdown {
   reasoning: number
   cacheRead: number
   cacheWrite: number
-  /** 与分项之和一致（或来自 API total） */
+  /** Equals sum of fields or API `total` when present. */
   total: number
 }
 
@@ -50,43 +50,43 @@ export interface SubtaskCardMetrics {
   title: string
   assistantMessageIndices: number[]
   partCount: number
-  /** 本子任务内各 assistant message 的 token 合计之和（非「相对上一子任务的增量」，见文档） */
+  /** Sum of per-assistant message token totals inside this subtask (segment sum, not delta vs previous subtask; see docs). */
   tokensSegmentSum: number
   tokenBreakdown: SubtaskTokenBreakdown
   llmCallCount: number
   /**
-   * 本子任务内 **去重后的文件路径数**（来自 write/edit/replace/patch/apply_patch 等），
-   * 按路径 `Set` 去重，**不是**「写操作调用次数」。
+   * **Distinct** file paths touched by write/edit/replace/patch/apply_patch, etc.
+   * Deduplicated by path `Set` — **not** the count of write tool invocations.
    */
   mutatedFilePaths: string[]
   mutatedFileCount: number
   /**
-   * 读侧近似：单路径工具（read/grep/list 等 input 路径）去重数 + glob 的 metadata.count 之和（扫到的文件数近似）。
-   * 合并子会话 `additionalMessages`。仅用于流程终点摘要等，**不在**指标栏展示。
+   * Read-side approximation: distinct single-path tool inputs (read/grep/list, etc.) + sum of glob `metadata.count`.
+   * Includes merged child-session `additionalMessages`. Used for flow-end summaries only — **not** shown in the metric strip.
    */
   readFilesCount: number
-  /** 读工具去重后的路径列表（不含 glob 仅计数的部分） */
+  /** Distinct read-tool paths (excludes glob count-only hits). */
   readFilePaths: string[]
-  /** glob 工具 meta.count 之和（近似匹配文件数） */
+  /** Sum of glob tool `meta.count` (approximate matched file count). */
   globMatchFileCount: number
-  /** websearch / webfetch 每次调用的关键词或 URL（顺序保留） */
+  /** websearch / webfetch query or URL per call (order preserved). */
   webSearchQueries: string[]
-  /** websearch / webfetch 调用次数（等于 webSearchQueries.length 若每次都能解析出标签） */
+  /** websearch / webfetch invocations (equals webSearchQueries.length when every call yields a label). */
   webSearchCallCount: number
-  /** 首条 created → 末条 completed（无则用 created）的跨度 ms */
+  /** Wall-clock span from first `created` to last `completed` (else `created`) in ms. */
   durationMs: number | null
-  /** 本子任务内各 assistant message 的 `info.cost` 之和（API 未给则为 0） */
+  /** Sum of `info.cost` across assistant messages in this subtask (0 if API omits). */
   costSegmentSum: number
   /**
-   * 按单价从 token 分项估算的美元成本（与 `TOKEN_COST_RATES_USD` 相乘后求和；当前单价均为 0，占位供以后接模型价目表）。
-   * 若将来与 API `cost` 并存，UI 可优先展示 API 或二者择一。
+   * Estimated USD from token breakdown × `TOKEN_COST_RATES_USD` (all rates 0 for now; wire real prices later).
+   * If API `cost` is also present, the UI can prefer one or the other.
    */
   costEstimatedUsd: number
-  /** 本段解决的 todo 数（= todosNewlyCompleted.length） */
+  /** Todos newly completed in this segment (= todosNewlyCompleted.length). */
   todosResolvedCount: number
 }
 
-/** 每千 token 美元单价占位：input/output/reasoning/cache read/cache write 可分别定价；当前全 0 */
+/** USD per 1k tokens by kind; all zero until a price table is wired in. */
 export const TOKEN_COST_RATES_USD_PER_1K = {
   input: 0,
   output: 0,
@@ -106,7 +106,7 @@ export function estimateCostUsdFromTokenBreakdown(bd: SubtaskTokenBreakdown): nu
   )
 }
 
-/** 卡片展示：优先 API 累计 cost；否则用分项估算（单价见 `TOKEN_COST_RATES_USD_PER_1K`） */
+/** Card display: prefer API `cost`; else estimate from breakdown (rates in `TOKEN_COST_RATES_USD_PER_1K`). */
 export function formatSubtaskCostDisplay(m: {
   costSegmentSum: number
   costEstimatedUsd: number
@@ -146,8 +146,8 @@ function strInput(v: unknown): string | undefined {
 }
 
 /**
- * 统计「读」相关：路径去重列表 + glob 结果文件数（meta.count）。
- * grep 的 meta.count 多为匹配行数，不计入「文件数」。
+ * Read stats: deduped path list + glob file hits (`meta.count`).
+ * grep `meta.count` is usually line matches, not files — excluded from file count.
  */
 function collectReadFileStatsFromMessages(msgs: OcMessage[]): { readPathsSorted: string[]; globFileHits: number } {
   const paths = new Set<string>()
@@ -176,7 +176,7 @@ function collectReadFileStatsFromMessages(msgs: OcMessage[]): { readPathsSorted:
   return { readPathsSorted: [...paths].sort(), globFileHits }
 }
 
-/** websearch 关键词 / webfetch URL，按时间顺序 */
+/** websearch queries / webfetch URLs in timeline order. */
 function collectWebSearchQueriesFromMessages(msgs: OcMessage[]): string[] {
   const out: string[] = []
   for (const m of msgs) {
@@ -206,7 +206,7 @@ function collectPathsFromToolPart(part: ToolPart, into: Set<string>) {
   if (p) into.add(p)
 }
 
-/** 从多条消息中收集 write/edit 等工具涉及的路径（用于 Changes 与子会话合并） */
+/** Collect write/edit paths across messages (Changes + merged child sessions). */
 export function collectMutatedPathsFromMessages(msgs: OcMessage[], into: Set<string>): void {
   for (const m of msgs) {
     for (const part of m.parts) {
@@ -215,7 +215,7 @@ export function collectMutatedPathsFromMessages(msgs: OcMessage[], into: Set<str
   }
 }
 
-/** 单条 assistant 消息的「结束」时间：completed 或 running 工具则延伸到 now */
+/** End time for one assistant message: `completed`, or extends to `now` while tools are running/pending. */
 function assistantMessageEndMs(msg: OcMessage, nowMs: number): number {
   const c = msg.info.time.created
   let e = msg.info.time.completed ?? c
@@ -232,8 +232,8 @@ function assistantMessageEndMs(msg: OcMessage, nowMs: number): number {
 }
 
 /**
- * 子任务时长：按全局时间轴上 **连续** assistant 下标分段，各段内部「首 created → 末 end」相加；
- * **不**把 user 消息插在中间时的间隔算进去（等待用户输入的时间）。
+ * Subtask duration: split into **contiguous** assistant index runs on the global timeline;
+ * sum each run's first `created` → last end. Gaps while waiting on the user are **excluded**.
  */
 export function computeSubtaskDurationExcludingUserGaps(
   assistantIndices: number[],
@@ -283,24 +283,24 @@ function countPartsInMessages(messages: OcMessage[]): number {
   return n
 }
 
-/** 子任务标题：阶段固定名 → 「新完成的 todo」→ 首条 text → 默认 */
+/** Subtask title: phase label → newly completed todos → first text line → fallback */
 export function deriveSubtaskTitle(
   st: AssistantSubtask,
   messages: OcMessage[],
   displayIndex: number
 ): string {
   if (st.phase === 'planning') {
-    return '前期调研与计划生成'
+    return 'Research & plan'
   }
   if (st.phase === 'wrap_up') {
-    return '总结归纳与结果输出'
+    return 'Wrap-up & output'
   }
   if (st.todosNewlyCompleted.length > 0) {
     const first = st.todosNewlyCompleted[0]!
     const head = first.content.length > 36 ? `${first.content.slice(0, 36)}…` : first.content
     const more =
-      st.todosNewlyCompleted.length > 1 ? ` 等 ${st.todosNewlyCompleted.length} 项` : ''
-    return `完成：${head}${more}`
+      st.todosNewlyCompleted.length > 1 ? ` +${st.todosNewlyCompleted.length - 1} more` : ''
+    return `Done: ${head}${more}`
   }
   const firstIdx = st.assistantMessageIndices[0]
   if (firstIdx !== undefined) {
@@ -314,10 +314,10 @@ export function deriveSubtaskTitle(
       }
     }
   }
-  return `子任务 ${displayIndex + 1}`
+  return `Subtask ${displayIndex + 1}`
 }
 
-/** 子任务时间跨度展示（无数据时 —） */
+/** Subtask duration label (em dash when unknown) */
 export function formatDurationMs(ms: number | null | undefined): string {
   if (ms == null || ms < 0) return '—'
   if (ms < 1000) return `${Math.round(ms)}ms`
@@ -334,7 +334,7 @@ export function buildSubtaskCardMetrics(
   displayIndex: number,
   options?: {
     nowMs?: number
-    /** task/subagent 子会话拉取到的消息：合并计入 Changes（write/edit 路径） */
+    /** Child session messages (task/subagent): merged into Changes (write/edit paths). */
     additionalMessages?: OcMessage[]
   },
 ): SubtaskCardMetrics {
@@ -412,7 +412,7 @@ export function buildSubtaskCardMetrics(
   }
 }
 
-/** 供后续可视化：本子任务涉及的 message + part 引用 */
+/** Message + part refs for this subtask (for downstream visualization). */
 export function getSubtaskMessagesAndParts(
   st: AssistantSubtask,
   messages: OcMessage[]

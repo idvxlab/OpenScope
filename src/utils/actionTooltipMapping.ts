@@ -492,9 +492,9 @@ export function resolvePartForAction(
     }
   }
   /**
-   * 子会话动作来自 `buildMappedActionsFromMessages(childMessages)`，其 `messageIndex` 是
-   * **该子数组** 的下标，与 `mergeMessagesForActionTooltipLookup` 的扁平顺序不一致。
-   * 用 assistant 消息的 `messageID` + `partIndex` 在合并表上唯一定位。
+   * Child-session actions come from `buildMappedActionsFromMessages(childMessages)` where `messageIndex` is
+   * local to that slice — it no longer matches `mergeMessagesForActionTooltipLookup` flattening. Fall back to
+   * `messageID` + `partIndex` pairing on the merged assistant rows.
    */
   if (act.messageID && act.partIndex !== undefined) {
     for (const msg of allMessages) {
@@ -520,8 +520,8 @@ function escapeForActionTooltip(s: string): string {
 }
 
 /**
- * Action flow 与 treemap 共用的 compact tooltip：正文优先来自消息 part 解析，失败时退化为
- * `actionType` / `status` / `detail`；底栏为时长 + 粗估 token。
+ * Compact tooltip shared by the action flow + treemap — body prefers parsed tool parts, else falls back to
+ * `actionType` / `status` / `detail`. Footer shows duration + rough token estimate.
  */
 export function buildCompactMappedActionTooltipHtml(
   act: MappedAction & { row: number },
@@ -581,7 +581,7 @@ export function buildCompactMappedActionTooltipHtml(
   return `<div class="action-tip-root action-tip-root--compact">${main}${foot}</div>`
 }
 
-/** @deprecated 使用 resolvePartForAction + mergeMessagesForActionTooltipLookup */
+/** @deprecated Prefer `resolvePartForAction` + `mergeMessagesForActionTooltipLookup` */
 export function resolvePartForMappedAction(
   messages: OcMessage[],
   messageIndex: number | undefined,

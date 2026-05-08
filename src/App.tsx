@@ -7,6 +7,7 @@ import {
   getTodos,
   getMessages,
   sendMessage,
+  getComposerModelOptions,
   abortSession,
   forkSession,
   createSession,
@@ -15,7 +16,7 @@ import {
   replyToQuestion,
   rejectQuestion,
   subscribeGlobalEvents,
-  subscribeWorkspaceEvents,
+  type OcComposerModelOption,
 } from './services/opencodeApi'
 import {
   normalizeSessionDirectory,
@@ -31,16 +32,19 @@ import ActionAnalysisModal from './components/ActionAnalysisModal'
 import ForkSessionModal from './components/ForkSessionModal'
 import SubtaskMessageConnector from './components/SubtaskMessageConnector'
 import { groupAssistantSubtasks, isTodoWriteMessage } from './utils/subtaskGrouping'
-import { buildMappedActionsFromMessages } from './utils/actionMapping'
 import {
   findSubtaskIndexForTodo,
   subtaskShouldUseTodoLink,
 } from './utils/subtaskLinkage'
+import { actionKeyMessageId } from './utils/actionKey'
+import { firstFlowAnchorKeyForSubtaskSegment } from './utils/actionMapping'
+import { parseActionRelatedSseEvent } from './utils/opencodeSse'
 import {
   archivedCompletedList,
   buildSessionTodoModel,
   getLatestTodowriteBatchProgress,
 } from './utils/todoRegistry'
+import { SHOW_COMPOSER_MODEL_UI } from './config/featureFlags'
 import { buildUserMessageWithGuidance } from './config/harnessGuidance'
 import {
   buildForkPanelSnapshotBundle,
@@ -50,15 +54,25 @@ import {
   type ForkPanelSnapshotBundle,
 } from './utils/forkPanelSnapshot'
 
-/** 每条「含 todo 写入」的 message 下标 → 当时同步到的 todos（用于重放 diff） */
+/** Map: message index containing a todo write → todos captured at that instant (for replaying diffs) */
 type TodosSnapshotMap = Record<string, OcTodo[]>
 const AUTO_ABORT_STUCK_RUNNING_AFTER_MS = 24 * 60 * 60 * 1000
 
-/** 发送后若 SSE 未及时刷新，轮询 GET /message 直到出现助手消息（与 OpenCode 流式/长耗时兼容） */
+/** If SSE lags after send, poll GET /message until an assistant message appears (streaming / long runs) */
 const POLL_ASSISTANT_INTERVAL_MS = 2000
 const POLL_ASSISTANT_MAX_ROUNDS = 90
-const MANUAL_DIRS_KEY = 'cockpit.manual.directories.v1'
-const CLOSED_DIRS_KEY = 'cockpit.closed.directories.v1'
+const MANUAL_DIRS_KEY = 'openscope.manual.directories.v1'
+const CLOSED_DIRS_KEY = 'openscope.closed.directories.v1'
+const COMPOSER_MODEL_LS_KEY = 'cockpit-ui.opencodeComposerModelRef'
+
+function loadComposerModelRefFromLs(): string {
+  try {
+    const v = window.localStorage.getItem(COMPOSER_MODEL_LS_KEY)
+    return typeof v === 'string' ? v.trim() : ''
+  } catch {
+    return ''
+  }
+}
 
 function parseEnvDirectorySeeds(raw: unknown): string[] {
   if (typeof raw !== 'string') return []
@@ -124,50 +138,13 @@ async function pollUntilAssistantMessage(
     await new Promise((r) => setTimeout(r, POLL_ASSISTANT_INTERVAL_MS))
     if (!isStillSelected()) return
     try {
-      const msgs = await getMessages(sessionId, `轮询等待助手回复 ${i + 1}`, directory)
+      const msgs = await getMessages(sessionId, `poll assistant reply ${i + 1}`, directory)
       onMessages(msgs)
       const last = msgs[msgs.length - 1]
       if (last?.info.role === 'assistant') return
-    } catch (e) {
-      console.warn('[pollUntilAssistantMessage]', e)
+    } catch {
+      /* polling continues */
     }
-  }
-}
-
-function formatMessageForConsole(msg: OcMessage | undefined, index: number) {
-  if (!msg) {
-    return { index, missing: true as const }
-  }
-  const partsSummary = msg.parts.map(p => {
-    switch (p.type) {
-      case 'text':
-        return { type: 'text' as const, textLen: (p.text || '').length }
-      case 'reasoning':
-        return { type: 'reasoning' as const, textLen: (p.text || '').length }
-      case 'tool':
-        return { type: 'tool' as const, tool: p.tool, status: p.state?.status }
-      case 'text-file':
-        return { type: 'text-file' as const, path: p.path }
-      case 'image':
-        return { type: 'image' as const }
-      case 'step-start':
-        return { type: 'step-start' as const }
-      case 'step-finish':
-        return { type: 'step-finish' as const, reason: p.reason }
-      case 'compaction':
-        return { type: 'compaction' as const }
-      default:
-        return { type: 'unknown' as const }
-    }
-  })
-  return {
-    index,
-    id: msg.info.id,
-    role: msg.info.role,
-    userContent: msg.info.role === 'user' ? msg.info.content : undefined,
-    partsCount: msg.parts.length,
-    partsSummary,
-    time: msg.info.time,
   }
 }
 
@@ -195,8 +172,7 @@ async function fetchSessionsAcrossDirectories(seedDirs: Array<string | undefined
   const jobs = dedup.map(async (dir) => {
     try {
       return await getSessions({ directory: dir })
-    } catch (e) {
-      console.warn('[fetchSessionsAcrossDirectories] skip directory due to error:', dir, e)
+    } catch {
       return [] as OcSession[]
     }
   })
@@ -218,26 +194,30 @@ function App() {
   const [apiConnected, setApiConnected] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [linkedSubtaskIndex, setLinkedSubtaskIndex] = useState<number | null>(null)
-  /** 递增以驱动 Todo 面板在选中子任务时自动展开到正确分区 */
+  /** Bumps when a subtask is selected so the Todo panel auto-expands the right section */
   const [todoPanelRevealGeneration, setTodoPanelRevealGeneration] = useState(0)
   const [selectedDirectory, setSelectedDirectory] = useState<string>('')
   const [projectDirectories, setProjectDirectories] = useState<string[]>([])
   const [manualDirectories, setManualDirectories] = useState<string[]>(() => loadManualDirectories())
   const [closedDirectories, setClosedDirectories] = useState<string[]>(() => loadClosedDirectories())
   const [creatingSession, setCreatingSession] = useState(false)
-  /** 按 sessionID 保存待作答的 question 请求（SSE `question.asked`） */
+  /** Pending question requests keyed by session (from SSE `question.asked`) */
   const [pendingQuestions, setPendingQuestions] = useState<Record<string, OcPendingQuestionRequest>>({})
   const [questionSubmitting, setQuestionSubmitting] = useState(false)
   const [aborting, setAborting] = useState(false)
   const [analysisAction, setAnalysisAction] = useState<(MappedAction & { row: number }) | null>(null)
-  /** Fork：先弹窗填说明，再采集子任务面板快照并调用 OpenCode fork */
+  /** Fork workflow: prompt → capture subtask panel snapshot → call OpenCode fork */
   const [pendingFork, setPendingFork] = useState<{
     action: MappedAction & { row: number }
     forkCtx?: ForkFromActionContext
   } | null>(null)
   const [forkBusy, setForkBusy] = useState(false)
   const [archivingSessionId, setArchivingSessionId] = useState<string | null>(null)
-  /** 已发出用户消息但尚未在列表里看到助手收尾（轮询中） */
+  const [composerModelRef, setComposerModelRef] = useState<string>(() => loadComposerModelRefFromLs())
+  const [composerModelOptions, setComposerModelOptions] = useState<OcComposerModelOption[]>([])
+  const [composerModelsLoading, setComposerModelsLoading] = useState(false)
+  const [composerModelsError, setComposerModelsError] = useState<string | null>(null)
+  /** User message sent; still polling for assistant completion */
   const [waitingForAssistantReply, setWaitingForAssistantReply] = useState(false)
 
   const pendingForkRef = useRef(pendingFork)
@@ -249,14 +229,8 @@ function App() {
   const refreshSessions = useCallback(
     async (extraDirectories?: Array<string | undefined>) => {
       const base = await getSessions()
-      const discovered = await getProjectDirectories().catch((e) => {
-        console.warn('[refreshSessions] getProjectDirectories failed:', e)
-        return [] as string[]
-      })
-      const current = await getCurrentWorkspaceDirectory().catch((e) => {
-        console.warn('[refreshSessions] getCurrentWorkspaceDirectory failed:', e)
-        return null
-      })
+      const discovered = await getProjectDirectories().catch(() => [] as string[])
+      const current = await getCurrentWorkspaceDirectory().catch(() => null)
       const mergedDiscovered = Array.from(new Set([...discovered, ...(current ? [current] : [])]))
       setProjectDirectories(mergedDiscovered)
       const closed = new Set(closedDirectories)
@@ -329,17 +303,63 @@ function App() {
     [sessions, selectedSessionId],
   )
 
-  /** Fork 后新 session：本地保存的「fork 前」子任务面板可视化快照（仅对比，不进上下文） */
+  const envBootstrapModel = useMemo(() => {
+    const v = import.meta.env.VITE_OPENCODE_DEFAULT_MODEL
+    return typeof v === 'string' && v.trim() ? v.trim() : null
+  }, [])
+
+  const composerModelOptionsForUi = useMemo(() => {
+    const t = composerModelRef.trim()
+    if (!t || composerModelOptions.some((o) => o.ref === t)) return composerModelOptions
+    return [...composerModelOptions, { ref: t, label: `${t}（本地已保存）` }].sort((a, b) =>
+      a.ref.localeCompare(b.ref),
+    )
+  }, [composerModelOptions, composerModelRef])
+
+  useEffect(() => {
+    if (!SHOW_COMPOSER_MODEL_UI) return
+    let cancelled = false
+    setComposerModelsLoading(true)
+    setComposerModelsError(null)
+    void getComposerModelOptions(activeSessionDirectory)
+      .then(({ options }) => {
+        if (!cancelled) setComposerModelOptions(options)
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setComposerModelsError(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (!cancelled) setComposerModelsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionDirectory])
+
+  const handleComposerModelRefChange = useCallback((ref: string) => {
+    const t = ref.trim()
+    setComposerModelRef(t)
+    try {
+      if (t) window.localStorage.setItem(COMPOSER_MODEL_LS_KEY, t)
+      else window.localStorage.removeItem(COMPOSER_MODEL_LS_KEY)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  /** Locally cached pre-fork panel snapshot for diffing (not sent to the model) */
   const forkPanelSnapshotBundle = useMemo(
     () => getForkPanelSnapshotBundle(selectedSessionId),
     [selectedSessionId],
   )
 
-  /** 子任务面板全屏（独立 dialog，便于后续扩展为多栏布局） */
+  /** Full-screen agent action visualization overlay */
   const [subtaskFullscreenOpen, setSubtaskFullscreenOpen] = useState(false)
-  /** 右侧子任务面板全局布局模式：时间轴 / 汇总 */
+  /** Column layout: timeline vs summary */
   const [subtaskFlowLayoutMode, setSubtaskFlowLayoutMode] = useState<'timeline' | 'summary'>('timeline')
-  /** ActionFlow rect 点击：单 action 高亮（再次点击同一 rect 取消） */
+  /** Short-lived hint when OpenCode signals `session.compacted` for the active session */
+  const [compactionControlHint, setCompactionControlHint] = useState<string | null>(null)
+  /** Action rectangle click toggles per-action highlight */
   const [selection, setSelection] = useState<{ subtaskIndex: number; actionKey: string } | null>(null)
   const handleSelectAction = useCallback((subtaskIndex: number, actionKey: string | null) => {
     setSelection((prev) => {
@@ -351,6 +371,24 @@ function App() {
     })
     if (actionKey !== null) setLinkedSubtaskIndex(subtaskIndex)
   }, [])
+
+  /** Clear action-outline selection when clicking outside flow nodes (sidebar, transcript, todos, composer, etc.). Blank flow canvas already clears via `onSelectAction(null)`. */
+  useEffect(() => {
+    if (selection === null) return
+    const onPointerDown = (e: PointerEvent) => {
+      const el = e.target
+      if (!(el instanceof Element)) return
+      if (el.closest('g.afv-action')) return
+      const inSubtaskCard = el.closest('[data-subtask-card-index]')
+      if (inSubtaskCard) {
+        if (el.closest('svg[data-action-flow-root="1"]')) setSelection(null)
+        return
+      }
+      setSelection(null)
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+  }, [selection])
 
   // Load sessions on mount
   useEffect(() => {
@@ -366,7 +404,7 @@ function App() {
       .catch(() => setApiConnected(false))
   }, [refreshSessions])
 
-  /** 当前选中的 session 已从列表消失时，回退到同文件夹或全局最新；文件夹内无会话且未选中时保持空白 */
+  /** If the active session disappears from the list, fall back to newest in folder or globally */
   useEffect(() => {
     if (sessions.length === 0) return
     if (selectedSessionId && sessions.some(s => s.id === selectedSessionId)) return
@@ -435,33 +473,40 @@ function App() {
         const sid = props?.sessionID
         if (sid && sid === selectedSessionIdRef.current) {
           const dir = sessionsRef.current.find((s) => s.id === sid)?.directory
-          getMessages(sid, `SSE:${eventType}`, dir)
-            .then(setMessages)
-            .catch((err) => console.warn('[SSE] Failed to refresh messages:', err))
+          getMessages(sid, `SSE:${eventType}`, dir).then(setMessages).catch(() => {})
         }
       }
 
       if (eventType.startsWith('message') || eventType.startsWith('session')) {
-        console.log('[OpenCode · App] SSE 事件触发刷新消息列表', eventType)
         const root = event as { directory?: string }
         const eventDir = typeof root.directory === 'string' ? root.directory : undefined
         refreshSessions(eventDir ? [eventDir] : undefined)
           .then(setSessions)
-          .catch(err => console.warn('[SSE] Failed to refresh sessions:', err))
+          .catch(() => {})
         const dir = sessionsRef.current.find(s => s.id === selectedSessionId)?.directory
         if (selectedSessionId) {
-          getMessages(selectedSessionId, `SSE:${eventType}`, dir)
-            .then(setMessages)
-            .catch(err => console.warn('[SSE] Failed to refresh messages:', err))
+          getMessages(selectedSessionId, `SSE:${eventType}`, dir).then(setMessages).catch(() => {})
         }
       }
 
       if (eventType.startsWith('todo')) {
         const dir = sessionsRef.current.find(s => s.id === selectedSessionId)?.directory
         if (selectedSessionId) {
-          getTodos(selectedSessionId, dir)
-            .then(setTodos)
-            .catch(err => console.warn('[SSE] Failed to refresh todos:', err))
+          getTodos(selectedSessionId, dir).then(setTodos).catch(() => {})
+        }
+      }
+
+      if (eventType === 'session.compacted') {
+        const props = payload.properties as { sessionID?: string; sessionId?: string } | undefined
+        let sid = props?.sessionID ?? props?.sessionId
+        if (!sid) {
+          const parsed = parseActionRelatedSseEvent(event)
+          sid = parsed?.sessionID
+        }
+        if (!sid || sid === selectedSessionIdRef.current) {
+          setCompactionControlHint(
+            `Context compacted · ${new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`,
+          )
         }
       }
     })
@@ -469,24 +514,19 @@ function App() {
     return unsubscribe
   }, [selectedSessionId, refreshSessions])
 
-  // 并行监听当前 workspace 的 GET /event（仅控制台有输出；handler 空避免与 global 重复刷新 UI）
-  useEffect(() => {
-    return subscribeWorkspaceEvents(() => {})
-  }, [])
-
   // Load messages + todos when session changes
   const loadSessionData = useCallback(async (sessionId: string, directory?: string) => {
     if (!sessionId) return
     setLoading(true)
     try {
       const [msgs, td] = await Promise.all([
-        getMessages(sessionId, '进入会话/切换 session 首次加载', directory),
+        getMessages(sessionId, 'initial load / session switch', directory),
         getTodos(sessionId, directory),
       ])
       setMessages(msgs)
       setTodos(td)
-    } catch (err) {
-      console.error('Failed to load session data:', err)
+    } catch {
+      /* loading errors surface via empty state; avoid noisy console */
     } finally {
       setLoading(false)
     }
@@ -496,7 +536,7 @@ function App() {
     void loadSessionData(selectedSessionId, activeSessionDirectory)
   }, [selectedSessionId, activeSessionDirectory, loadSessionData])
 
-  /** 对于超过 24h 且无后续 assistant 消息收口的 running/pending tool，自动 abort 会话（每条 call 只触发一次）。 */
+  /** Auto-abort when a tool stays running/pending >24h without a follow-up assistant message (once per call id). */
   useEffect(() => {
     if (!selectedSessionId || aborting) return
     const now = Date.now()
@@ -535,8 +575,7 @@ function App() {
         ])
         setSessions(list)
         setMessages(msgs)
-      } catch (err) {
-        console.warn('[auto-abort stuck running] failed:', err)
+      } catch {
         autoAbortedRunningKeysRef.current.delete(runKey)
       } finally {
         setAborting(false)
@@ -548,7 +587,7 @@ function App() {
     setTodosSnapshotAtMessageIndex({})
   }, [selectedSessionId])
 
-  // 为「当前最后一条 todo-write message」保存 todos 快照，便于重算分组时做 completed diff（历史较早的写入若无快照则为空）
+  // Snapshot todos at the latest todo-write message for completed-item diffs during regrouping
   useEffect(() => {
     if (!selectedSessionId || loading) return
     const writeIdxs: number[] = []
@@ -596,14 +635,14 @@ function App() {
   }, [messages, todosSnapshotAtMessageIndex, todos, sessionTodoModel])
 
   /**
-   * 右栏子任务：与 `groupAssistantSubtasks` 结果一一对应并全部展示（含尚无 todowrite 的前期调研段）。
+   * Right-rail cards mirror `groupAssistantSubtasks`, including planning segments before the first todowrite.
    */
   const visibleSubtasks = useMemo(
     () => assistantSubtasks.map((subtask, sourceIndex) => ({ subtask, sourceIndex })),
     [assistantSubtasks],
   )
 
-  /** execution 子任务：用 todo id 高亮 */
+  /** Execution-phase cards: highlight Todo rows via linked ids */
   const linkedTodoIds = useMemo(() => {
     if (linkedSubtaskIndex === null) return null
     const st = assistantSubtasks[linkedSubtaskIndex]
@@ -611,34 +650,37 @@ function App() {
     return new Set(st.linkedTodoIds)
   }, [linkedSubtaskIndex, assistantSubtasks])
 
-  useEffect(() => {
-    if (messages.length === 0) return
-    const payload = assistantSubtasks.map((st, si) => {
-      const segmentIndices = [
-        ...(st.userMessageIndices ?? []),
-        ...st.assistantMessageIndices,
-      ].sort((a, b) => a - b)
-      const segmentMsgs = segmentIndices
-        .map(i => messages[i])
-        .filter((m): m is OcMessage => m != null)
-      return {
-        segmentIndex: si,
-        phase: st.phase,
-        subtask_id: st.subtask_id,
-        todos: st.todos,
-        todosNewlyCompleted: st.todosNewlyCompleted,
-        linkedTodoIds: st.linkedTodoIds,
-        userMessageIndices: st.userMessageIndices,
-        assistantMessageIndices: st.assistantMessageIndices,
-        messages: segmentIndices.map(i => formatMessageForConsole(messages[i], i)),
-        flowActions: buildMappedActionsFromMessages(segmentMsgs),
-      }
-    })
-    console.log('[AssistantSubtasks]', payload)
-  }, [assistantSubtasks, messages])
+  /** Parent message bubble index for connector + scroll-to when an action glyph is selected. */
+  const linkedMessageIndexForConnector = useMemo(() => {
+    if (!selection) return null
+    const mid = actionKeyMessageId(selection.actionKey)
+    if (!mid) return null
+    const idx = messages.findIndex((m) => m.info.id === mid)
+    return idx >= 0 ? idx : null
+  }, [selection, messages])
+
+  const linkedMessageToAction = useMemo(() => {
+    if (linkedSubtaskIndex === null || selection === null) return null
+    if (selection.subtaskIndex !== linkedSubtaskIndex) return null
+    const mi = linkedMessageIndexForConnector
+    if (mi === null) return null
+    return {
+      messageIndex: mi,
+      actionKey: selection.actionKey,
+      subtaskIndex: selection.subtaskIndex,
+    }
+  }, [linkedSubtaskIndex, selection, linkedMessageIndexForConnector])
 
   const toggleSubtaskLink = useCallback((si: number) => {
-    setLinkedSubtaskIndex(prev => (prev === si ? null : si))
+    setLinkedSubtaskIndex((prev) => {
+      const next = prev === si ? null : si
+      setSelection((sel) => {
+        if (!sel) return null
+        if (next === null || sel.subtaskIndex !== next) return null
+        return sel
+      })
+      return next
+    })
   }, [])
 
   const handleTodoClick = useCallback(
@@ -662,6 +704,13 @@ function App() {
   )
 
   useEffect(() => {
+    if (!compactionControlHint) return
+    const id = window.setTimeout(() => setCompactionControlHint(null), 8000)
+    return () => window.clearTimeout(id)
+  }, [compactionControlHint])
+
+  useEffect(() => {
+    setCompactionControlHint(null)
     setLinkedSubtaskIndex(null)
     setTodoPanelRevealGeneration(0)
     setSelection(null)
@@ -704,15 +753,54 @@ function App() {
 
   useEffect(() => {
     if (linkedSubtaskIndex === null) return
-    const st = assistantSubtasks[linkedSubtaskIndex]
-    if (!st || st.assistantMessageIndices.length === 0) return
-    const first = Math.min(...st.assistantMessageIndices)
+    const mid = linkedMessageIndexForConnector
+    const selMatches =
+      selection !== null &&
+      selection.subtaskIndex === linkedSubtaskIndex &&
+      mid !== null
     requestAnimationFrame(() => {
-      messageScrollRef.current
-        ?.querySelector(`[data-message-index="${first}"]`)
+      const scrollRoot = messageScrollRef.current
+      if (!scrollRoot) return
+      if (selMatches && mid !== null) {
+        scrollRoot
+          .querySelector(`[data-message-index="${mid}"]`)
+          ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        return
+      }
+      const st = assistantSubtasks[linkedSubtaskIndex]
+      if (!st || st.assistantMessageIndices.length === 0) return
+
+      const noTodoConnector =
+        linkedTodoIds === null || linkedTodoIds.size === 0
+
+      if (noTodoConnector) {
+        const anchorKey = firstFlowAnchorKeyForSubtaskSegment(st, messages, Date.now())
+        if (anchorKey) {
+          const esc =
+            typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+              ? CSS.escape(anchorKey)
+              : anchorKey.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+          const anchorEl = scrollRoot.querySelector(`[data-transcript-action-key="${esc}"]`)
+          if (anchorEl) {
+            anchorEl.scrollIntoView({ block: 'center', behavior: 'smooth' })
+            return
+          }
+        }
+      }
+
+      const first = Math.min(...st.assistantMessageIndices)
+      scrollRoot
+        .querySelector(`[data-message-index="${first}"]`)
         ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     })
-  }, [linkedSubtaskIndex, assistantSubtasks])
+  }, [
+    linkedSubtaskIndex,
+    assistantSubtasks,
+    linkedMessageIndexForConnector,
+    selection,
+    linkedTodoIds,
+    messages,
+  ])
 
   useEffect(() => {
     if (linkedSubtaskIndex === null) return
@@ -745,12 +833,11 @@ function App() {
         return rest
       })
       const dir = sessionsRef.current.find((s) => s.id === selectedSessionId)?.directory
-      const msgs = await getMessages(selectedSessionId, 'question 回复后', dir)
+      const msgs = await getMessages(selectedSessionId, 'after question reply', dir)
       setMessages(msgs)
-    } catch (e) {
-      console.error('[question reply]', e)
+    } catch {
       window.alert(
-        '提交答案失败。请确认 OpenCode 已支持 POST /question/{requestID}/reply（OpenCode SDK v2 与 opencode serve 新版本提供该路由）。',
+        'Failed to submit answers. Ensure OpenCode exposes POST /question/{requestID}/reply (OpenCode SDK v2 / recent opencode serve).',
       )
     } finally {
       setQuestionSubmitting(false)
@@ -768,25 +855,24 @@ function App() {
         return rest
       })
       const dir = sessionsRef.current.find((s) => s.id === selectedSessionId)?.directory
-      const msgs = await getMessages(selectedSessionId, 'question 拒绝后', dir)
+      const msgs = await getMessages(selectedSessionId, 'after question reject', dir)
       setMessages(msgs)
-    } catch (e) {
-      console.error('[question reject]', e)
-      window.alert('操作失败。')
+    } catch {
+      window.alert('Action failed.')
     } finally {
       setQuestionSubmitting(false)
     }
   }, [selectedSessionId])
 
-  /** 消息气泡内联 question 提交/跳过后，与底部面板一致：刷新消息并清掉同会话的 SSE pending */
+  /** Inline question answered in a bubble: mirror bottom panel refresh + clear SSE pending bucket */
   const handleQuestionAnswered = useCallback(async () => {
     if (!selectedSessionId) return
     const dir = sessionsRef.current.find((s) => s.id === selectedSessionId)?.directory
     try {
-      const msgs = await getMessages(selectedSessionId, '内联 question 提交后', dir)
+      const msgs = await getMessages(selectedSessionId, 'after inline question submit', dir)
       setMessages(msgs)
-    } catch (e) {
-      console.error('[handleQuestionAnswered]', e)
+    } catch {
+      /* transcript refresh best-effort */
     }
     setPendingQuestions((prev) => {
       const next = { ...prev }
@@ -801,12 +887,12 @@ function App() {
     const sid = selectedSessionId
     const text = buildUserMessageWithGuidance(payload.combinedText)
     const images = payload.imageParts
-    // OpenCode 常在「本轮 Agent 跑完」后才返回 POST /message；若在此 await，MessageInput 会一直保持 sending，输入框被禁用。
-    // 与 fork 首条消息一致：后台发送，靠 SSE + 完成后拉列表 更新 UI。
+    // OpenCode often finishes POST /message only after the agent turn — awaiting here would keep the composer disabled.
+    // Fire-and-forget like fork’s first message: rely on SSE + a follow-up GET /message poll.
     void (async () => {
       try {
-        await sendMessage(sid, text, dir, { imageParts: images })
-        const msgs = await getMessages(sid, 'POST 发送完成后拉取完整列表', dir)
+        await sendMessage(sid, text, dir, { imageParts: images, model: composerModelRef.trim() || undefined })
+        const msgs = await getMessages(sid, 'after POST /message completes', dir)
         setMessages(msgs)
         const last = msgs[msgs.length - 1]
         if (last?.info.role === 'user') {
@@ -818,12 +904,11 @@ function App() {
           }
         }
       } catch (e) {
-        console.error('[handleSendMessage]', e)
-        window.alert(`发送失败：${e instanceof Error ? e.message : String(e)}`)
+        window.alert(`Send failed: ${e instanceof Error ? e.message : String(e)}`)
         setWaitingForAssistantReply(false)
       }
     })()
-  }, [selectedSessionId, sessions])
+  }, [selectedSessionId, sessions, composerModelRef])
 
   const handleAbortMessage = useCallback(async () => {
     if (!selectedSessionId) return
@@ -833,7 +918,7 @@ function App() {
       await abortSession(selectedSessionId, dir)
       const [list, msgs] = await Promise.all([
         refreshSessions(),
-        getMessages(selectedSessionId, 'abort 后刷新', dir),
+        getMessages(selectedSessionId, 'after abort refresh', dir),
       ])
       setSessions(list)
       setMessages(msgs)
@@ -881,8 +966,7 @@ function App() {
       setApiConnected(true)
       setSelectedDirectory(normalizeSessionDirectory(created.directory))
       setSelectedSessionId(created.id)
-    } catch (e) {
-      console.error('Failed to create session:', e)
+    } catch {
       setApiConnected(false)
     } finally {
       setCreatingSession(false)
@@ -931,7 +1015,7 @@ function App() {
       const label = (s?.title || 'Untitled').slice(0, 80)
       if (
         !window.confirm(
-          `确定要归档「${label}」吗？\n\n将调用 OpenCode DELETE /session/:id，该会话及其消息会从服务端删除，通常无法恢复。`,
+          `Delete session "${label}"?\n\nThis calls OpenCode DELETE /session/:id and removes the conversation from the server. This usually cannot be undone.`,
         )
       ) {
         return
@@ -958,8 +1042,7 @@ function App() {
           setTodosSnapshotAtMessageIndex({})
         }
       } catch (e) {
-        console.error('Failed to archive session:', e)
-        window.alert(`归档失败：${e instanceof Error ? e.message : String(e)}`)
+        window.alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`)
       } finally {
         setArchivingSessionId(null)
       }
@@ -1003,8 +1086,8 @@ function App() {
               sourceParentSessionId: targetSessionId,
               forkCtx,
             })
-          } catch (e) {
-            console.error('Fork: panel snapshot failed (fork will still run):', e)
+          } catch {
+            /* snapshot optional */
           }
         }
 
@@ -1030,10 +1113,12 @@ function App() {
 
         const userText = forkPrompt.trim()
         if (userText.length > 0) {
-          // POST /message 常在本轮 Agent 跑完后才返回；不要 await，否则对话窗要等整轮结束。
+          // POST /message may return only after the agent turn; don’t block the composer on it.
           void (async () => {
             try {
-              await sendMessage(forked.id, buildUserMessageWithGuidance(userText), forked.directory)
+              await sendMessage(forked.id, buildUserMessageWithGuidance(userText), forked.directory, {
+                model: composerModelRef.trim() || undefined,
+              })
               const msgsAfterSend = await getMessages(
                 forked.id,
                 'after fork first user message',
@@ -1055,23 +1140,21 @@ function App() {
                 }
               }
             } catch (err) {
-              console.error('Fork: first message failed:', err)
               window.alert(
-                `Fork 后首条消息发送失败：${err instanceof Error ? err.message : String(err)}\n\n请检查 OpenCode 是否在运行、VITE_OPENCODE_BASE 是否与终端一致，以及控制台 Network 中 POST …/message 是否 200。`,
+                `Failed to send the first message after fork: ${err instanceof Error ? err.message : String(err)}\n\nCheck that OpenCode is running, VITE_OPENCODE_BASE matches your terminal, and POST …/message returns 200 in the Network tab.`,
               )
             }
           })()
         }
         setPendingFork(null)
         setForkBusy(false)
-      } catch (e) {
-        console.error('Failed to fork session from action:', e)
+      } catch {
         setPendingFork(null)
       } finally {
         setForkBusy(false)
       }
     },
-    [selectedSessionId, sessions, activeSessionDirectory, messages, visibleSubtasks, refreshSessions],
+    [selectedSessionId, sessions, activeSessionDirectory, messages, visibleSubtasks, refreshSessions, composerModelRef],
   )
 
   const handleAnalyzeFromAction = useCallback((action: MappedAction & { row: number }) => {
@@ -1089,7 +1172,7 @@ function App() {
         position: 'relative',
       }}
     >
-      {/* 左侧：文件夹窄栏 + 会话列表 */}
+      {/* Sidebar: workspaces + sessions */}
       <Sidebar
         sessionsInFolder={sessionsInFolder}
         directories={directories}
@@ -1108,7 +1191,7 @@ function App() {
         onCloseDirectory={handleCloseDirectory}
       />
 
-      {/* 中栏 + 右栏：同一相对定位容器，便于子任务与消息连线 */}
+      {/* Center + right columns share one positioned parent for connector lines */}
       <div
         ref={linkAreaRef}
         style={{
@@ -1166,6 +1249,12 @@ function App() {
               questionSubmitting={questionSubmitting}
               sessionDirectory={activeSessionDirectory}
               onQuestionAnswered={handleQuestionAnswered}
+              composerModelRef={composerModelRef}
+              onComposerModelRefChange={handleComposerModelRefChange}
+              composerModelOptions={composerModelOptionsForUi}
+              composerModelsLoading={composerModelsLoading}
+              composerModelsError={composerModelsError}
+              envBootstrapModel={envBootstrapModel}
             />
           </div>
         </div>
@@ -1194,8 +1283,44 @@ function App() {
               color: '#171717',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span>Agent Action Visualization</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <span style={{ flexShrink: 0 }}>Agent Action Visualization</span>
+              {compactionControlHint ? (
+                <span
+                  title="OpenCode SSE: session.compacted — context window was compacted"
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 500,
+                    color: '#467FA8',
+                    flexShrink: 1,
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {compactionControlHint}
+                </span>
+              ) : null}
+              {SHOW_COMPOSER_MODEL_UI && (
+              <span
+                title="与左侧输入框「模型」选择同步"
+                style={{
+                  fontSize: 11,
+                  fontWeight: 400,
+                  color: '#737373',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {composerModelRef.trim()
+                  ? `模型 ${composerModelRef.trim()}`
+                  : envBootstrapModel
+                    ? `模型 ${envBootstrapModel}（.env）`
+                    : '模型：服务端默认'}
+              </span>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <button
                   type="button"
@@ -1265,8 +1390,8 @@ function App() {
               <button
                 type="button"
                 onClick={() => setSubtaskFullscreenOpen(true)}
-                aria-label="全屏子任务面板"
-                title="全屏子任务面板"
+                aria-label="Open agent action visualization fullscreen"
+                title="Open agent action visualization fullscreen"
                 disabled={visibleSubtasks.length === 0}
                 style={{
                   width: 26,
@@ -1335,10 +1460,12 @@ function App() {
 
         <SubtaskMessageConnector
           containerRef={linkAreaRef}
+          messageScrollRef={messageScrollRef}
           todoPanelScrollRef={todoPanelScrollRef}
           subtaskScrollRef={subtaskScrollRef}
           subtaskIndex={linkedSubtaskIndex}
           linkedTodoIds={linkedTodoIds}
+          linkedMessageToAction={linkedMessageToAction}
         />
         {analysisAction ? (
           <ActionAnalysisModal action={analysisAction} onClose={() => setAnalysisAction(null)} />

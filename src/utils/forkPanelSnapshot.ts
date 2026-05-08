@@ -40,7 +40,7 @@ type ForkPanelSnapshotBundleV1 = {
 export type ForkPanelSnapshotBundle = {
   version: 2
   forkAnchorMessageId: string
-  /** 精确锚定 fork 的 action（与 message 内多 part 对齐）；缺省时用 forkAnchorMessageId 取该 message 最后一条动作 */
+  /** Optional anchor at part granularity; otherwise we take the last mapped action on forkAnchorMessageId */
   forkAnchorPartId?: string
   sourceParentSessionId: string
   forkOriginSubtaskId: string

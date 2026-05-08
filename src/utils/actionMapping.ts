@@ -7,8 +7,9 @@ import type {
   OcSseActionEvent,
   ToolPart,
 } from '../types/opencode'
-import { isTodoWriteTool } from './subtaskGrouping'
+import { isTodoWriteTool, type AssistantSubtask } from './subtaskGrouping'
 import { stripHarnessGuidanceForDisplay } from '../config/harnessGuidance'
+import { actionKey } from './actionKey'
 
 const SUBAGENT_TOOLS = new Set(['task', 'subtask', 'subagent', 'agent'])
 
@@ -76,17 +77,17 @@ function durationForTool(part: ToolPart, message: OcMessage, nowMs: number): num
   const start = part.state?.time?.start
   const end = part.state?.time?.end
   if (typeof start === 'number' && typeof end === 'number' && end > start) {
-    return Math.min(120_000, Math.max(10, end - start))
+    return Math.max(10, end - start)
   }
   const created = message.info.time?.created ?? 0
   const completed = message.info.time?.completed
   if (typeof completed === 'number' && completed > created) {
-    return Math.min(120_000, completed - created)
+    return Math.max(10, completed - created)
   }
   const out = part.state?.output ?? ''
   const inp = part.state?.input
   const inpStr = inp ? JSON.stringify(inp) : ''
-  return Math.min(60_000, 80 + estimateTokensFromStrings(out, inpStr) * 30)
+  return Math.max(10, 80 + estimateTokensFromStrings(out, inpStr) * 30)
 }
 
 /** 工具 wall-clock 区间，用于并行重叠判定（与 duration 语义一致） */
@@ -177,7 +178,7 @@ export function extractChildSessionIdFromToolPart(part: ToolPart): string | unde
 }
 
 function durationForText(text: string): number {
-  return Math.min(120_000, 50 + text.length * 15)
+  return Math.max(50, 50 + text.length * 15)
 }
 
 function userMessageDisplayText(message: OcMessage): string {
@@ -309,6 +310,7 @@ export function buildMappedActionsFromMessages(
   const nowMs = options?.nowMs ?? Date.now()
   const staleToolCallIDs = collectStaleToolCallIDs(messages)
 
+  /** Each output `messageIndex` refers to the **`messages`** array passed here (`segmentMessages` in subtasks), not necessarily the global session list — correlate UI with `message.info.id`. */
   messages.forEach((message, messageIndex) => {
     const baseTime = message.info.time?.created ?? 0
     const mid = message.info.id
@@ -461,8 +463,63 @@ function partToMappedAction(
   }
 }
 
+/**
+ * `data-transcript-action-key` on bubbles — must match `actionKey(act)` embedded in flows for `bandStart` (main = 0).
+ * `messageIndex` inside `MappedAction` is unused by `actionKey()`.
+ */
+export function transcriptAnchorKeyForPart(
+  message: OcMessage,
+  part: OcMessagePart,
+  partIndex: number,
+  nowMs: number,
+  staleToolCallIDs: Set<string>,
+  bandStart = 0,
+): string | null {
+  if (message.info.role !== 'assistant') return null
+  const baseTime = message.info.time?.created ?? 0
+  const sortTime = baseTime + partIndex * 0.001
+  const mapped = partToMappedAction(
+    part,
+    message,
+    0,
+    partIndex,
+    sortTime,
+    message.info.id,
+    nowMs,
+    staleToolCallIDs,
+  )
+  if (!mapped) return null
+  const row = actionRowForBand(bandStart, mapped.actionType)
+  return actionKey({ ...mapped, row })
+}
+
+/**
+ * Stable `actionKey` for the first flow block in a subtask card’s parent segment (same ordering as `SubtaskCard`’s
+ * `buildMappedActionsFromMessages(segmentMessages)` before child-session merge). Skips `UserRequest` bubbles (user
+ * column has no `data-transcript-action-key` yet).
+ */
+export function firstFlowAnchorKeyForSubtaskSegment(
+  subtask: AssistantSubtask,
+  messages: OcMessage[],
+  nowMs: number,
+): string | null {
+  const indices = [...(subtask.userMessageIndices ?? []), ...subtask.assistantMessageIndices].sort(
+    (a, b) => a - b,
+  )
+  const segmentMessages = indices
+    .map((i) => messages[i])
+    .filter((m): m is OcMessage => m != null)
+  if (segmentMessages.length === 0) return null
+  const actions = buildMappedActionsFromMessages(segmentMessages, { nowMs })
+  if (actions.length === 0) return null
+  const sorted = [...actions].sort((a, b) => a.sortTime - b.sortTime)
+  const firstVisual = sorted.find((a) => a.actionType !== 'UserRequest') ?? sorted[0]
+  if (!firstVisual) return null
+  return actionKey(firstVisual)
+}
+
 /** 基于消息序列判定失效工具：若某 tool 仍 pending/running，但后续 assistant 消息已开始，则视为该 call 不会再回流结果。 */
-function collectStaleToolCallIDs(messages: OcMessage[]): Set<string> {
+export function collectStaleToolCallIDs(messages: OcMessage[]): Set<string> {
   const stale = new Set<string>()
   const assistantIndices: number[] = []
   for (let i = 0; i < messages.length; i++) {

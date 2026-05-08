@@ -188,12 +188,12 @@ body {
   animation: subtaskTimeAlertPulse 0.75s ease-in-out infinite;
 }
 
-/* 居中图标叠在 rect 之上，须穿透指针事件，否则会挡 tooltip 与 rect 上的 contextmenu */
+/* Centered icons stack above rects — must ignore pointer events so tooltips/context menus still work */
 .action-flow-action-icon {
   pointer-events: none;
 }
 
-/* Action 流 react-tooltip：浅色底、随内容增高（不强制滚动） */
+/* Action-flow react-tooltip: light surface, grows with content instead of forcing scroll */
 .action-flow-react-tooltip {
   z-index: 10050 !important;
   min-width: 260px;
@@ -392,8 +392,8 @@ body {
 }
 
 /**
- * 可选：ActionFlowVisualization 传 hideScrollbar 时加此类，隐藏滚动条但仍可滚轮滑动。
- * 默认不隐藏，保留系统滚动条。
+ * Optional when ActionFlowVisualization sets hideScrollbar: hides native bars but keeps wheel scrolling.
+ * Default keeps the system scrollbar visible.
  */
 .action-flow-scroll--hide-scrollbar {
   scrollbar-width: none;
@@ -406,7 +406,7 @@ body {
   display: none;
 }
 
-/* SubtaskCard：时长 Filter 滑块 — 缩小 thumb，与 9–10px 文案尺度协调 */
+/* SubtaskCard duration filter — smaller thumb tuned for 9–10px label scale */
 input[type='range'].subtask-card-duration-filter-range {
   -webkit-appearance: none;
   appearance: none;

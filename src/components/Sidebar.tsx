@@ -3,7 +3,7 @@ import type { OcSession } from '../types/opencode'
 import { folderDisplayName } from '../utils/sessionFolders'
 
 interface SidebarProps {
-  /** 当前文件夹下的会话（已排序、已过滤） */
+  /** Sessions in the selected folder (sorted, filtered). */
   sessionsInFolder: OcSession[]
   directories: string[]
   selectedDirectory: string
@@ -12,7 +12,7 @@ interface SidebarProps {
   onSelectSession: (id: string) => void
   onCreateSession: () => void | Promise<void>
   creatingSession?: boolean
-  /** 调用 OpenCode DELETE /session/:id，从列表移除（服务端删除数据） */
+  /** Calls OpenCode DELETE /session/:id — removes session from UI (server deletes data). */
   onArchiveSession?: (sessionId: string) => void | Promise<void>
   archivingSessionId?: string | null
   collapsed: boolean
@@ -98,7 +98,7 @@ export default function Sidebar({
             borderRadius: 6,
             cursor: 'pointer',
           }}
-          title="展开侧边栏"
+          title="Expand sidebar"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#171717" strokeWidth="2">
             <path d="M3 12h18M3 6h18M3 18h18" />
@@ -116,7 +116,7 @@ export default function Sidebar({
         flexShrink: 0,
       }}
     >
-      {/* 文件夹窄栏 */}
+      {/* Folder rail */}
       <div
         style={{
           width: RAIL_WIDTH,
@@ -134,7 +134,7 @@ export default function Sidebar({
         {onAddDirectory && (
           <button
             type="button"
-            title="添加 workspace/directory"
+            title="Add workspace directory"
             onClick={onAddDirectory}
             style={{
               width: 32,
@@ -188,7 +188,7 @@ export default function Sidebar({
         })}
       </div>
 
-      {/* 会话列表 */}
+      {/* Session list */}
       <div
         style={{
           width: 240,
@@ -213,7 +213,7 @@ export default function Sidebar({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span
-              title={selectedDirectory || '当前工作区'}
+              title={selectedDirectory || 'Active workspace'}
               style={{
                 fontSize: 14,
                 fontWeight: 500,
@@ -233,7 +233,7 @@ export default function Sidebar({
                 background: apiConnected ? '#0ABE00' : '#FF3B30',
                 flexShrink: 0,
               }}
-              title={apiConnected ? '已连接 OpenCode' : '未连接'}
+              title={apiConnected ? 'OpenCode connected' : 'Not connected'}
             />
           </div>
           <button
@@ -250,7 +250,7 @@ export default function Sidebar({
               cursor: 'pointer',
               flexShrink: 0,
             }}
-            title="折叠侧边栏"
+            title="Collapse sidebar"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8F8F8F" strokeWidth="2">
               <path d="M11 19l-7-7 7-7M18 19l-7-7 7-7" />
@@ -282,7 +282,7 @@ export default function Sidebar({
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 5v14M5 12h14" />
             </svg>
-            {creatingSession ? '创建中…' : '新建会话'}
+            {creatingSession ? 'Creating…' : 'New session'}
           </button>
         </div>
 
@@ -295,7 +295,7 @@ export default function Sidebar({
         >
           {sessionsInFolder.length === 0 ? (
             <div style={{ padding: '12px 14px', fontSize: 12, color: '#8F8F8F', lineHeight: 1.5 }}>
-              该文件夹下暂无会话，点击「新建会话」开始。
+              No sessions in this folder yet. Use &quot;New session&quot; to start.
             </div>
           ) : (
             sessionsInFolder.map((session) => (
@@ -352,7 +352,7 @@ export default function Sidebar({
                 {onArchiveSession && (
                   <button
                     type="button"
-                    title="归档：从列表移除（服务端删除会话数据）"
+                    title="Delete session (removes from server)"
                     disabled={archivingSessionId === session.id}
                     onClick={(e) => {
                       e.stopPropagation()

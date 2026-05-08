@@ -1,4 +1,6 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { SHOW_COMPOSER_MODEL_UI } from '../config/featureFlags'
+import type { OcComposerModelOption } from '../services/opencodeApi'
 import { prepareOutgoingFromFiles } from '../utils/messageAttachments'
 
 export type MessageSendPayload = {
@@ -15,6 +17,14 @@ interface MessageInputProps {
   sessionId?: string
   agentName?: string | null
   modelName?: string | null
+  /** `provider/model`; empty string → omit body.model (then `.env` default inside API layer may still apply). */
+  composerModelRef?: string
+  onComposerModelRefChange?: (ref: string) => void
+  composerModelOptions?: OcComposerModelOption[]
+  composerModelsLoading?: boolean
+  composerModelsError?: string | null
+  /** Shown when composer selection is empty — mirrors `VITE_OPENCODE_DEFAULT_MODEL`. */
+  envBootstrapModel?: string | null
 }
 
 const FONT_SIZE = 12
@@ -25,7 +35,21 @@ const MAX_ROWS = 6
 const MIN_H = MIN_ROWS * LINE_PX
 const MAX_H = MAX_ROWS * LINE_PX
 
-export default function MessageInput({ onSend, onAbort, disabled, isRunning, aborting, agentName, modelName }: MessageInputProps) {
+export default function MessageInput({
+  onSend,
+  onAbort,
+  disabled,
+  isRunning,
+  aborting,
+  agentName,
+  modelName,
+  composerModelRef = '',
+  onComposerModelRefChange,
+  composerModelOptions = [],
+  composerModelsLoading = false,
+  composerModelsError = null,
+  envBootstrapModel = null,
+}: MessageInputProps) {
   const [text, setText] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [sending, setSending] = useState(false)
@@ -45,11 +69,20 @@ export default function MessageInput({ onSend, onAbort, disabled, isRunning, abo
     (text.trim().length > 0 || files.length > 0) && !sending && !disabled
   const canAbort = Boolean(isRunning && onAbort && !aborting && !disabled)
 
+  const nextSendModelHint = useMemo(() => {
+    if (!SHOW_COMPOSER_MODEL_UI) return ''
+    const picked = composerModelRef.trim()
+    if (picked) return picked
+    const env = (envBootstrapModel && envBootstrapModel.trim()) || ''
+    if (env) return `${env}（VITE_OPENCODE_DEFAULT_MODEL）`
+    return 'OpenCode 服务端默认'
+  }, [composerModelRef, envBootstrapModel])
+
   const handleSend = async () => {
     if (!canSend) return
     const prevText = text
     const prevFiles = files
-    // 发送即清空，避免长请求期间仍残留输入
+    // Clear immediately so long requests don’t leave stale text in the composer
     setText('')
     setFiles([])
     setSending(true)
@@ -58,12 +91,11 @@ export default function MessageInput({ onSend, onAbort, disabled, isRunning, abo
       const { combinedText, images } = await prepareOutgoingFromFiles(prevFiles, prevText)
       await onSend({ combinedText, imageParts: images })
     } catch (err) {
-      // 失败时回填用户草稿
+      // Restore draft on failure
       setText(prevText)
       setFiles(prevFiles)
       const msg = err instanceof Error ? err.message : String(err)
       setAttachError(msg)
-      console.error('[MessageInput]', err)
     } finally {
       setSending(false)
     }
@@ -76,7 +108,6 @@ export default function MessageInput({ onSend, onAbort, disabled, isRunning, abo
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setAttachError(msg)
-      console.error('[MessageInput abort]', err)
     }
   }
 
@@ -105,6 +136,57 @@ export default function MessageInput({ onSend, onAbort, disabled, isRunning, abo
 
   return (
     <div style={{ padding: '10px 16px' }}>
+      {SHOW_COMPOSER_MODEL_UI && (
+        <div
+          style={{
+            marginBottom: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label htmlFor="cockpit-composer-model" style={{ fontSize: 11, color: '#666', flexShrink: 0 }}>
+              模型
+            </label>
+            <select
+              id="cockpit-composer-model"
+              value={composerModelRef.trim() ? composerModelRef.trim() : ''}
+              onChange={(e) => onComposerModelRefChange?.(e.target.value)}
+              disabled={disabled || !onComposerModelRefChange || composerModelsLoading}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 11,
+                padding: '6px 8px',
+                borderRadius: 6,
+                border: '1px solid #E8E8E8',
+                background: '#FFFFFF',
+                color: '#333',
+              }}
+            >
+              <option value="">默认（不在请求里指定 model）</option>
+              {composerModelOptions.map((o) => (
+                <option key={o.ref} value={o.ref}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            {composerModelsLoading && (
+              <span style={{ fontSize: 10, color: '#999', flexShrink: 0 }}>加载中…</span>
+            )}
+          </div>
+          {composerModelsError && (
+            <div style={{ fontSize: 10, color: '#C62828', lineHeight: 1.4 }}>
+              无法拉取模型列表（需要 OpenCode 暴露 GET /config/providers）：{composerModelsError}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: '#888', lineHeight: 1.4 }}>
+            下一条消息将使用：<span style={{ color: '#555' }}>{nextSendModelHint}</span>
+          </div>
+        </div>
+      )}
+
       <div
         style={{
           background: '#FFFFFF',
@@ -118,7 +200,7 @@ export default function MessageInput({ onSend, onAbort, disabled, isRunning, abo
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="随便问点什么..."
+          placeholder="Ask something…"
           disabled={disabled || sending}
           rows={MIN_ROWS}
           style={{
@@ -179,7 +261,7 @@ export default function MessageInput({ onSend, onAbort, disabled, isRunning, abo
                     lineHeight: 1,
                     color: '#999',
                   }}
-                  aria-label="移除"
+                  aria-label="Remove attachment"
                 >
                   ×
                 </button>
@@ -211,7 +293,7 @@ export default function MessageInput({ onSend, onAbort, disabled, isRunning, abo
             type="button"
             onClick={onPickFiles}
             disabled={disabled || sending}
-            title="添加附件（图片或文本类文件）"
+            title="Attach images or text files"
             style={{
               width: 32,
               height: 32,

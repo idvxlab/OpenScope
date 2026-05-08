@@ -8,7 +8,7 @@ import {
   type ActionTypePaletteId,
   DEFAULT_ACTION_TYPE_PALETTE_ID,
 } from '../styles/actionTypePalettes'
-import { effectiveStatusColors, resolveActionBlockColors } from '../utils/actionFlowColors'
+import { effectiveStatusColors, resolveActionBlockColors, statusColors } from '../utils/actionFlowColors'
 import { appendActionFlowIcon, getActionFlowIconSvg } from './actionFlowIcons'
 import ActionFlowContextMenu, { type ActionFlowContextMenuState } from './ActionFlowContextMenu'
 import { actionKey } from '../utils/actionKey'
@@ -17,7 +17,7 @@ type FlowNode =
   | { kind: 'end'; row: number; sessionRegion: 'main' | 'fork-new-branch' }
   | (MappedAction & { row: number; kind: 'action' })
 
-/** `computeLayout` 输出的每一项，用于连线 bundling */
+/** Single item from `computeLayout`, used when bundling connector edges */
 type FlowLayoutItem = {
   node: FlowNode
   x: number
@@ -31,58 +31,59 @@ type FlowLayoutItem = {
 const MARGIN_LEFT = 24
 const GAP = 12
 /**
- * 垂直布局（与 `actionMapping` 一致）：
- * - 每个 session 块内 2 个基础 layer：layer0 = kernel（Think/Response/Plan…），layer1 = 工具等；
- * - 父侧 task（Subagent）：一旦解析出 `childSessionID`，整块 rect 归入 **`session:task:` 子会话区域**（不再出现在主 session 内）；
- * - 同一 layer 上并行动作用 parallelLaneIndex 再向下错开，故「行数」随并行度增高；
- * - 子会话块在 main 下方，内部同样 layer + lane，高度亦非定值。
+ * Vertical layout (consistent with `actionMapping`):
+ * - Each session uses two baseline layers: layer0 = kernel (Think / Response / Plan…), layer1 = tools, etc.;
+ * - Parent-side task (Subagent): once `childSessionID` is known, its rect moves into **`session:task:`** child-session lanes (no longer drawn in the main session band);
+ * - Parallel lanes on the same layer are staggered with `parallelLaneIndex`, so row count grows with parallelism;
+ * - Child-session bands sit below `main`, with their own layers and lanes — height is not fixed.
  */
 const BLOCK_H = 28
 const ROW_H = 32
-/** 同一 row 上并行 lane 的垂直错开（与主 row 间距一致） */
+/** Vertical stagger for parallel lanes on the same logical row (same step as primary row spacing) */
 const PARALLEL_LANE_DY = ROW_H
 const SESSION_REGION_GAP = 10
 const TOP_PAD = 4
 const MIN_W = 28
-/** Duration mode: 小于等于该时长统一用最小宽度（单位 ms） */
+/** Duration mode: durations ≤ this use the minimum block width (ms) */
 const DUR_WIDTH_BASE_MS = 10
-/** Duration mode: 与 `DUR_BLOCK_AT_REF_PX` 成对的参考 wall-clock 时长 */
+/** Duration mode: reference wall-clock duration paired with `DUR_BLOCK_AT_REF_PX` */
 const DUR_REF_MS = 120_000
-/** Duration mode: `DUR_REF_MS` 处 block 的右边界（`<=DUR_WIDTH_BASE_MS` 仍用 `MIN_W`） */
+/** Duration mode: block outer edge at `DUR_REF_MS` (still `MIN_W` when `<= DUR_WIDTH_BASE_MS`) */
 const DUR_BLOCK_AT_REF_PX = 200
 const DUR_BETA_MS = Math.max(1, DUR_REF_MS - DUR_WIDTH_BASE_MS)
 /**
- * Block 宽（action rect）：`w = MIN_W + DUR_PX_PER_MS * (durationMs - 10)`，故 10ms 以下 28px、120s 时 200px，之后线性延伸。
- * 与「两 slot 间空档」比例独立，见 `DUR_GAP_MIN_PX` / `DUR_GAP_REF_PX`。
+ * Action block width: `w = MIN_W + DUR_PX_PER_MS * (durationMs - 10)` — below ~10 ms stays 28px, at 120s reaches 200px, then scales linearly.
+ * Independent tuning from inter-slot gaps; see `DUR_GAP_MIN_PX` / `DUR_GAP_REF_PX`.
  */
 const DUR_PX_PER_MS = (DUR_BLOCK_AT_REF_PX - MIN_W) / DUR_BETA_MS
 /**
- * 空档（idle）水平像素：最小 `DUR_GAP_MIN_PX`，在 `DUR_GAP_REF_MS` 时总宽 `DUR_GAP_REF_PX`（与 10ms 基线同斜率公式的“间隔版”）：
+ * Idle gap width between slots (px): floors at `DUR_GAP_MIN_PX`, reaches `DUR_GAP_REF_PX` at `DUR_GAP_REF_MS`
+ * (“gap analogue” of the block width slope from the ~10 ms baseline):
  * `gapPx = DUR_GAP_MIN_PX + DUR_GAP_PX_PER_MS * max(0, gapMs - 10)`.
- * 改比例：动 `DUR_GAP_MIN_PX` / `DUR_GAP_REF_PX` / `DUR_GAP_REF_MS`（及可选 `DUR_WIDTH_BASE_MS` 共用于 block+gap 时间基线）。
+ * Tweak proportions via `DUR_GAP_*`; optionally align `DUR_WIDTH_BASE_MS` with combined block + gap timelines.
  */
 const DUR_GAP_MIN_PX = 10
 const DUR_GAP_REF_PX = 200
-/** 与 `DUR_GAP_MIN_PX` / `DUR_GAP_REF_PX` 成对；可与 `DUR_REF_MS`（block）不同，独立改“间隔的参考时间”时改此值 */
+/** Paired with `DUR_GAP_*`; may differ from `DUR_REF_MS` (blocks) when you tune gap reference duration separately */
 const DUR_GAP_REF_MS = DUR_REF_MS
 const DUR_GAP_BETA_MS = Math.max(1, DUR_GAP_REF_MS - DUR_WIDTH_BASE_MS)
 const DUR_GAP_PX_PER_MS = (DUR_GAP_REF_PX - DUR_GAP_MIN_PX) / DUR_GAP_BETA_MS
 const DUR_TAIL_PAD_PX = 2
 const BOTTOM_PAD = 6
-/** 至少两行泳道 + 两块 action 时的最小画布高度，避免空数据时 SVG 塌成几十像素 */
+/** Minimum canvas height when at least two swimlanes and two blocks exist — avoids collapsing the SVG when data is sparse */
 const MIN_SVG_CONTENT_HEIGHT = TOP_PAD + 2 * ROW_H + 2 * BLOCK_H + BOTTOM_PAD
-/** 视口上限：约 4 行（含上下 padding） */
+/** Clamp visible viewport to ~4 lanes including vertical padding */
 const MAX_VISIBLE_ROWS = 4
-/** 与右键菜单一致，用于 ⋯ 等 SVG 文字 */
+/** Matches context-menu typography for ellipsis / SVG text labels */
 const SVG_FONT_SANS =
   "'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif"
-/** 分叉快照中「已不在上下文」的幽灵段：rect / 连线 */
+/** Fork snapshots: ghost segments no longer on the branch — rects + connectors */
 const FORK_GHOST_STROKE = '#B8B8B8'
 const FORK_GHOST_MARKER_FILL = '#B8B8B8'
 
 /**
- * 与 block 同一条斜率线：`[10ms,120s] → [28px,200px]` 之外继续线性延伸、无上封顶。
- * `w = 28 + DUR_PX_PER_MS * (duration - 10)` 当 duration > 10。
+ * Same slope as blocks past `[10ms,120s] → [28px,200px]`, extrapolating linearly without caps.
+ * `w = 28 + DUR_PX_PER_MS * (duration - 10)` whenever duration > 10.
  */
 function durationBlockExtraPx(durationMs: number): number {
   if (!Number.isFinite(durationMs) || durationMs <= DUR_WIDTH_BASE_MS) return 0
@@ -90,8 +91,9 @@ function durationBlockExtraPx(durationMs: number): number {
 }
 
 /**
- * 相邻两 slot 空档 `gapMs = next.minStart - prev.maxEnd`（已 clamp ≥0）→ 布局上 `interSlotGap` 像素，近似等于正交边水平段长度。
- * 与 block 的 `MIN_W=28` 不同：空档从 `DUR_GAP_MIN_PX=10` 起算，2min 时总宽 200px。
+ * Inter-slot idle `gapMs = next.minStart - prev.maxEnd` (clamped ≥0) maps to layout `interSlotGap` px,
+ * roughly matching the horizontal span of orthogonal edge segments.
+ * Unlike blocks (`MIN_W = 28`), gaps start from `DUR_GAP_MIN_PX = 10` and hit 200px wide at ~2 min.
  */
 function durationGapWidthPx(gapMs: number): number {
   if (!Number.isFinite(gapMs) || gapMs <= 0) return DUR_GAP_MIN_PX
@@ -148,15 +150,15 @@ function laneOffsetY(parallelLaneIndex?: number): number {
 }
 
 /**
- * 会话垂直分区（顺序很重要）：
- * 1. `session:task:<parentTaskCallID>`：child-session 动作 / 已解析出 childSessionID 的父 Subagent
- *    都进入对应的子会话区域。**fork 前后规则一致** —— 新分支里的 task 也照样进自己的子会话区。
- * 2. `session:fork-new-branch`：fork 后新会话「主泳道」上的非 task 动作（kernel / 工具等），
- *    `forkCompareRow === 2` 标记。x 从 fork 锚点右缘起算独立推进，y 放在历史区域之下。
- * 3. `session:main`：fork 之前 / 普通模式下主进程会话内的非 task 动作。
+ * Vertical stacking of logical sessions / lanes (evaluation order matters):
+ * 1. `session:task:<parentTaskCallID>` — child-session actions or parent-side Subagents with `childSessionID`
+ *    collapse into matching child-session bands. Fork rules mirror before/after branching.
+ * 2. `session:fork-new-branch` — non-task actions on the new branch lane after a fork (`forkCompareRow === 2`),
+ *    laid out west-to-east starting at the fork anchor and drawn below legacy regions.
+ * 3. `session:main` — everything else belonging to the main process before/for non-fork views.
  *
- * 注意：判别顺序必须先 child-session / Subagent→childSession，再 forkCompareRow，
- * 否则新分支里的 task 会被强行塞进 fork-new-branch、与它的子会话割裂。
+ * Always classify child-session / Subagent routing before evaluating `forkCompareRow`, otherwise
+ * new-branch task nodes may be mis-labeled into `fork-new-branch` bands and visually detach from children.
  */
 function actionSessionKey(a: MappedAction & { row: number }): string {
   if (a.source === 'child-session' && a.parentTaskCallID) {
@@ -176,12 +178,12 @@ function actionSessionKey(a: MappedAction & { row: number }): string {
   return 'session:main'
 }
 
-/** 是否属于「fork 之后的新分支」(包括新分支里的 task / 子 session)。统一以 forkCompareRow=2 标记 */
+/** Whether this action sits on the post-fork “new branch” track (still includes nested tasks/sub-sessions); marked via `forkCompareRow === 2`. */
 function isNewBranchAction(a: MappedAction & { row: number }): boolean {
   return a.forkCompareRow === 2
 }
 
-/** 父 task 在数据里仍是 layer1；在子会话 **区域** 内绘制时固定为第一行（新开 session 的顶轨） */
+/** Parent tasks remain layer1 in payloads; inside child-session **bands** force first row rendering (fresh session headline). */
 function actionLocalRowForLayout(a: MappedAction & { row: number }): number {
   if (
     a.actionType === 'Subagent' &&
@@ -194,7 +196,7 @@ function actionLocalRowForLayout(a: MappedAction & { row: number }): number {
   return Math.max(0, a.row % 2)
 }
 
-/** 把「当前用到的行」在固定总高 totalH 内竖直居中（整体 translate 到 content <g>） */
+/** Vertical center the active rows inside `totalH` by translating the content `<g>`. */
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -303,21 +305,21 @@ function computeLayout(
   const forkAnchorActionKey = layoutOpts?.forkAnchorActionKey ?? null
   const sorted = [...actions].sort((a, b) => a.sortTime - b.sortTime)
 
-  /** step 间距收紧：顺序推进时不拉太开 */
+  /** Tighter step gap so sequential actions do not drift too far horizontally */
   const TIMELINE_STEP_GAP = 10
 
   const sessionKeySet = new Set<string>()
   sorted.forEach((a) => sessionKeySet.add(actionSessionKey(a)))
 
   /**
-   * 「是否在 fork 对比模式」：只要存在任意 forkCompareRow=2 的 action 就成立 —— 包含
-   * 新分支只有 task / 子 session 没有「主泳道」非 task 动作的边角情况。
-   * `hasForkNewBranchSession` 仅判断 `session:fork-new-branch` 区域是否存在（决定要不要单独占一条泳道）。
+   * Fork-compare mode activates when any `forkCompareRow === 2` action exists — including the edge case
+   * where the new branch only contains task / child-session work with no “primary lane” tooling.
+   * `hasForkNewBranchSession` only checks whether `session:fork-new-branch` rows exist (whether to reserve a lane).
    */
   const hasNewBranchAction = sorted.some(isNewBranchAction)
   const hasForkNewBranchSession = sessionKeySet.has('session:fork-new-branch')
 
-  /** task 子会话区域 → 是否属于「新分支的 task」（看父 Subagent 的 forkCompareRow） */
+  /** Task child-session region → treat as new-branch task if the parent Subagent has `forkCompareRow === 2` */
   const isNewBranchTaskKey = (k: string): boolean => {
     if (!k.startsWith('session:task:')) return false
     const callID = k.slice('session:task:'.length)
@@ -325,7 +327,7 @@ function computeLayout(
       (a) => a.actionType === 'Subagent' && a.source !== 'child-session' && a.callID === callID,
     )
     if (parent) return parent.forkCompareRow === 2
-    /** 兜底：父 Subagent 不在当前数据中（理论上不会，安全起见看本区域里的 child-session 动作标记） */
+    /** Fallback when the parent Subagent is missing from current data (shouldn’t happen — inspect child-session flags) */
     const anyAction = sorted.find((a) => actionSessionKey(a) === k)
     return anyAction?.forkCompareRow === 2
   }
@@ -334,11 +336,11 @@ function computeLayout(
   if (sessionKeySet.has('session:main')) sessionOrder.push('session:main')
 
   /**
-   * Fork 对比模式下两条平行支线，每条独立终点：
-   *  - 历史轨迹（含锚点 + 灰幽灵）→ 灰色 end（嵌在主泳道右端）
-   *  - 新分支 → 正常 end（嵌在新泳道右端）
-   * 普通模式仍然只有一个 main end。
-   * end 节点必须能识别属于哪条支线（sessionRegion），否则 x/y 都对不上。
+   * Fork-compare mode renders two parallel rails, each with its own terminator:
+   *  - Legacy timeline (anchor + grey ghosts) → muted end node anchored to the main lane
+   *  - New branch actions → standard end node anchored to the fork lane
+   * Vanilla sessions still emit a single main end.
+   * End nodes carry `sessionRegion` so layout can place x/y deterministically.
    */
   const seq: FlowNode[] = sorted.map(a => ({ ...a, kind: 'action' as const }))
   if (includeEndNode) {
@@ -367,12 +369,12 @@ function computeLayout(
     return keys
   }
   /**
-   * Fork 后泳道顺序：
-   *   main (历史含 anchor + ghost)
-   *   → 历史 task 子会话区 (parent 为历史 Subagent)
-   *   → session:fork-new-branch (新分支「主泳道」非 task 动作)
-   *   → 新分支 task 子会话区 (parent 为新分支 Subagent)
-   * 这样新分支的子 session 不会被挤到历史泳道之间，整段「新分支」在视觉上聚团在底部。
+   * Lane order after fork:
+   *   main (legacy anchor + ghosts)
+   *   → historical task child regions (parents are legacy Subagents)
+   *   → `session:fork-new-branch` (new-track non-task tooling)
+   *   → new-branch task regions (parents live on the forked Subagent rail)
+   * This keeps nested child sessions from interleaving legacy vs fork content; the fork stack reads as one block.
    */
   const historicalChildKeys = sortChildKeys(childKeys.filter((k) => !isNewBranchTaskKey(k)))
   const newBranchChildKeys = sortChildKeys(childKeys.filter((k) => isNewBranchTaskKey(k)))
@@ -381,20 +383,20 @@ function computeLayout(
   sessionOrder.push(...newBranchChildKeys)
   if (sessionOrder.length === 0) sessionOrder.push('session:main')
 
-  /** 全局画布上的 x（索引 -> x） */
+  /** Global canvas x positions (sorted index → x) */
   const actionXBySortedIndex = new Map<number, number>()
 
   /**
-   * 根轴：所有「非新分支 + 非 child-session」的动作（即历史轨迹的父侧）。
-   * 新分支 (forkCompareRow=2) 的父侧动作 —— 包括新分支 Subagent —— 一律走 branch 局部 x 轨，
-   * 不与历史动作竞争横轴位置。
+   * Root rail: every action that is neither `child-session` nor on the forked branch (legacy parent timeline).
+   * Fork parents (`forkCompareRow === 2`, including forked Subagents) advance on a dedicated branch rail so they
+   * never steal horizontal space from the historical spine.
    */
   const rootIndices = sorted
     .map((a, idx) => ({ a, idx }))
     .filter((x) => x.a.source !== 'child-session' && !isNewBranchAction(x.a))
     .map((x) => x.idx)
 
-  /** 根轴 slot（统一时间轴） */
+  /** Root rail slot ids (shared chronological axis) */
   const rootSlotByIndex = new Map<number, string>()
   const rootGroupStepToSlot = new Map<string, Map<number, string>>()
   const rootGroupLaneStepCounter = new Map<string, Map<number, number>>()
@@ -436,9 +438,9 @@ function computeLayout(
   }
 
   /**
-   * 子 session 局部轴（相对偏移）：
-   * - 每个子 session 仅按自身动作推进；
-   * - 记录 childSpan，用于扩展父 task 所在 slot 的有效右边界。
+   * Child-session local rails (relative offsets):
+   * - Each child band advances independently;
+   * - Track `childSpan` so parent task slots can stretch to encompass nested work.
    */
   const childLocalXByIndex = new Map<number, number>()
   const childSpanByCallID = new Map<string, number>()
@@ -484,7 +486,7 @@ function computeLayout(
     }
 
     const childSlotWidth = new Map<string, number>()
-    /** Duration mode: 记录每个 child slot 的时间区间，用于计算相邻 slot 之间的 idle gap */
+    /** Duration mode: wall-clock spans per child slot to derive idle gaps */
     const childSlotTimeRange = new Map<string, { minStart: number; maxEnd: number }>()
     for (const idx of childIndices) {
       const slotKey = childSlotByIndex.get(idx)
@@ -541,10 +543,10 @@ function computeLayout(
     childSpanByCallID.set(callID, childSpanRight)
   }
 
-  /** 根轴每个 slot 的有效跨度：max(父块宽, 父task->子session全程宽) */
+  /** Effective horizontal span per root slot: max(parent block, parent task→child-session footprint) */
   const rootSlotEffectiveSpan = new Map<string, number>()
   const rootSlotOffsetByIndex = new Map<number, number>()
-  /** Duration mode: 记录每个 root slot 的时间区间，用于计算相邻 slot 间的 idle gap */
+  /** Duration mode: wall-clock ranges for each root slot (idle gap between slots) */
   const rootSlotTimeRange = new Map<string, { minStart: number; maxEnd: number }>()
   for (const [slotKey, indices] of rootSlotIndices.entries()) {
     let span = MIN_W
@@ -610,15 +612,14 @@ function computeLayout(
   }
 
   /**
-   * Fork 新分支：作为根轴上 anchor 右缘 + gap 起算的独立 x 轨。
-   * 必须先算完 branch x，子 session 的 x 才能对齐到「新分支 Subagent 的右缘」。
-   * - 与 anchor 之后的「灰色幽灵后缀」共享相同的起点 x，但在不同 session 区域（垂直分开），
-   *   形成「同一 SVG 内的两条平行支线」视觉效果。
-   * - 若没有显式 anchor 或没有任何幽灵动作，回退到主轴右端起算。
+   * Post-fork branch rail: advances east from the fork anchor (+ gap), independent from the trunk axis.
+   * Branch x must settle before aligning child-session x to the trailing edge of the forked Subagent.
+   * - Shares the fork anchor’s starting x as post-anchor ghosts/new-branch divergence, vertically split into bands.
+   * - Fallback to trunk right edge when no explicit anchor exists or ghosts are absent.
    */
   let forkBranchRight = MARGIN_LEFT
   if (hasNewBranchAction) {
-    /** 1. 解析 anchor 在主轴上的右缘（anchor 必定是历史动作，已有 root 轴 x） */
+    /** ① Resolve anchor’s right boundary on the trunk (anchors are historical rows with known root x). */
     let anchorRight: number | null = null
     if (forkAnchorActionKey) {
       for (let i = 0; i < sorted.length; i++) {
@@ -628,8 +629,7 @@ function computeLayout(
           if (x != null) {
             const w = blockWidth(durationMode, a.durationMs)
             anchorRight = x + w
-            /** anchor 自己若是带 child session 的 Subagent，下沉支线必须越过 child 区域，
-             *  否则 ghost / 新分支会与 anchor 的子 session 横向叠合。 */
+            /** If the anchor is a Subagent with a child session, branch rails must clear the child band to avoid overlay. */
             if (
               a.actionType === 'Subagent' &&
               a.source !== 'child-session' &&
@@ -644,7 +644,7 @@ function computeLayout(
       }
     }
     if (anchorRight == null) {
-      /** 兜底：取主轴最右「非新分支」动作的右缘（连同其子 session 末端） */
+      /** Fallback: rightmost non-fork action on the trunk (including nested child spans). */
       for (let i = 0; i < sorted.length; i++) {
         const a = sorted[i]!
         if (isNewBranchAction(a)) continue
@@ -665,9 +665,9 @@ function computeLayout(
     const forkBaseX = (anchorRight ?? MARGIN_LEFT) + TIMELINE_STEP_GAP
 
     /**
-     * 2. branch indices = 所有「forkCompareRow=2 且非 child-session」的动作。
-     *    包含新分支的 Subagent —— 它们虽然 actionSessionKey 落在 task 子区域（与 fork 前一致），
-     *    但 x 必须走 branch 轨而非 root 轨，否则会和历史动作抢占同一段水平空间。
+     * ② Branch indices = every `forkCompareRow === 2` action that is not `child-session`.
+     *    Includes forked Subagents — they still key into `session:task:*` like pre-fork tasks,
+     *    but must advance on the branch rail or they collide with historical slots.
      */
     const branchIndices = sorted
       .map((a, idx) => ({ a, idx }))
@@ -708,10 +708,9 @@ function computeLayout(
       arr.push(idx)
       branchSlotIndices.set(slotKey, arr)
     }
-    /** branch slot 有效宽度需考虑「新分支 Subagent 的子 session 宽度」，否则下一个 branch slot
-     *  会与子 session 横向重叠（与 root 轨同样的逻辑）。 */
+    /** Branch-slot width must swallow nested forked Subagent sessions (same widening rule as the trunk rail). */
     const branchSlotEffectiveSpan = new Map<string, number>()
-    /** Duration mode: 记录每个 branch slot 的时间区间 */
+    /** Duration mode: per-branch-slot time span */
     const branchSlotTimeRange = new Map<string, { minStart: number; maxEnd: number }>()
     for (const [slotKey, indices] of branchSlotIndices.entries()) {
       let span = MIN_W
@@ -776,14 +775,11 @@ function computeLayout(
     forkBranchRight = forkBaseX + Math.max(0, branchCursor - lastBranchGap)
 
     /**
-     * 双轨对齐：ghost 走的根轴 slot 与新分支走的 branch slot 是两套独立累计的 cursor，
-     * 即便 TIMELINE_STEP_GAP 相同，只要每个 slot 自己的 effectiveSpan 不同（duration 不一致 /
-     * Subagent 子 session 宽度不同），ghost 第 k 步与新分支第 k 步的 x 就会错开。
+     * Dual-rail synchronization: ghosts advance on trunk slots while the fork rail uses branch slots — two independent cursors.
+     * Matching `TIMELINE_STEP_GAP` is not enough: differing `effectiveSpan` (duration or nested breadth) pushes ghost step k vs branch step k apart.
      *
-     * 这里做一次「post-anchor 对齐」：把 ghost root slot 和 branch slot 按出现顺序成对，
-     * 第 k 步统一宽度 = max(ghostSpan_k, branchSpan_k)，从 forkBaseX 开始用统一宽度推进，
-     * 同步重写两边的 actionXBySortedIndex。后续 child session 绝对 x 在更下方一轮按 parent x
-     * 重新计算，会自动跟随。
+     * Post-anchor unify: zip ghost-root slots with branch slots in order of appearance, force shared width = max(ghostSpan_k, branchSpan_k),
+     * advance east from `forkBaseX`, rewriting `actionXBySortedIndex` for both rails. Absolute child-session x recomputes later from parent anchors.
      */
     const ghostRootSlots: { slotKey: string; firstSortTime: number }[] = []
     for (let s = 0; s < nextRootSlot; s++) {
@@ -834,9 +830,8 @@ function computeLayout(
   }
 
   /**
-   * 子 session 绝对 x = 父 task 右缘 + gap + 本地相对 x。
-   * **必须放在 branch x 计算之后** —— 新分支的 task 父节点 x 在 branch 轨里设置，
-   * 否则 `actionXBySortedIndex.get(parentIdx)` 拿到的是 undefined / fallback。
+   * Child-session absolute x = parent task trailing edge + gap + local offset inside the nested band.
+   * **Runs after branch x assignment** — parent nodes on forks live on branch coordinates; otherwise lookups miss.
    */
   for (const childSession of childKeys) {
     const callID = childSession.slice('session:task:'.length)
@@ -858,10 +853,9 @@ function computeLayout(
   }
 
   /**
-   * 两条支线各自的 end x：
-   *  - main：根轴游标（rootCursor 已是最右 root slot 右缘 + TIMELINE_STEP_GAP）。
-   *    需要进一步拉到「所有非新分支动作」的实际最右（包括历史子 session 末端）以避免线条穿过子 session。
-   *  - fork-new-branch：分支右缘 + 一段 gap（forkBranchRight 已包含新分支 Subagent 的子 session 宽度）。
+   * Terminator x placement per fork rail:
+   *  - Main: trunk cursor reaches the farthest legacy action (nested child timelines included).
+   *  - `fork-new-branch`: branch cursor + slack (`forkBranchRight` already nests forked Subagent spans).
    */
   let historicalRightmost = rootCursor - TIMELINE_STEP_GAP
   for (let i = 0; i < sorted.length; i++) {
@@ -890,9 +884,7 @@ function computeLayout(
     const local = sorted.filter((a) => actionSessionKey(a) === session)
     let maxBottom = BLOCK_H
     for (const a of local) {
-      /** 区域内 y 仅由 row（kernel/tool）+ 并行 lane 决定；fork 区分已经体现为
-       *  「独立 session 区域 + sessionTopY」，不再额外加 FORK_COMPARE_ROW_GAP，
-       *  否则新分支会被多顶 88px，与历史轨迹中间出现一片空地。 */
+      /** Within-session y comes from kernel/tool row plus parallel lanes; forks already split via `sessionTopY`. */
       const yInSession =
         actionLocalRowForLayout(a) * ROW_H + laneOffsetY(a.parallelLaneIndex)
       maxBottom = Math.max(maxBottom, yInSession + BLOCK_H)
@@ -912,9 +904,9 @@ function computeLayout(
     if (node.kind === 'end') {
       const w = MIN_W
       /**
-       * 每条支线 end 各占自己泳道的第一行：
-       *  - sessionRegion='main' → 历史轨迹的 end（普通模式 / 历史灰端）
-       *  - sessionRegion='fork-new-branch' → 新分支的 end
+       * Each fork rail anchors its terminator on the lane’s first toolbar row:
+       *  - `sessionRegion='main'` — legacy terminator (solo mode / ghost closure)
+       *  - `sessionRegion='fork-new-branch'` — new-track terminator
        */
       const isForkEnd = node.sessionRegion === 'fork-new-branch'
       const xNode = isForkEnd ? endXForkBranch : endXMain
@@ -928,7 +920,7 @@ function computeLayout(
       const xNode = actionXBySortedIndex.get(i) ?? MARGIN_LEFT
       const session = actionSessionKey(a)
       const yBase = sessionTopY.get(session) ?? TOP_PAD
-      /** 与 sessionTopY 同步：y 不再加 forkCompareRow * FORK_COMPARE_ROW_GAP */
+      /** Matches sessionTopY base without legacy `forkCompareRow * FORK_COMPARE_ROW_GAP` bumps */
       const y = yBase + actionLocalRowForLayout(a) * ROW_H + laneOffsetY(a.parallelLaneIndex)
       const cy = y + BLOCK_H / 2
       layout.push({ node, x: xNode, y, w, h: BLOCK_H, cx: xNode + w / 2, cy })
@@ -955,10 +947,9 @@ function parallelSiblingSkip(pa: MappedAction, pb: MappedAction): boolean {
 }
 
 /**
- * 一个前驱扇出到多个并行后继：所有 targets 共用同一 bundleX 作为「分叉竖轴」，
- * 从而所有支线的竖直段都在同一 x 位置，不产生交叉。
- * - Trunk（pred.right → bundleX，水平）：画一次，不带箭头
- * - Branches（bundleX → target.cy（竖直）→ target.x（水平）+ 箭头）：每个 target 一条
+ * Single predecessor fans out to parallel successors via one shared bundle column so vertical segments overlap cleanly.
+ * - Draw the trunk horizontally once (no arrow head).
+ * - Emit one branch polyline per target ending with arrow heads.
  */
 function appendOrthoFanOut(
   content: d3.Selection<SVGGElement, unknown, null, undefined>,
@@ -983,7 +974,7 @@ function appendOrthoFanOut(
   const minTargetX = Math.min(...targets.map((t) => t.x))
   const bundleX = (source.x + source.w + minTargetX) / 2
 
-  /** Trunk: source.right → bundleX（只画一次，不带箭头，避免在同一 x 叠多根箭头） */
+  /** Trunk: source.right → bundleX (single segment, avoids stacked arrow markers on one x). */
   const trunk = d3.path()
   trunk.moveTo(source.x + source.w, source.cy)
   trunk.lineTo(bundleX, source.cy)
@@ -997,7 +988,7 @@ function appendOrthoFanOut(
     .attr('pointer-events', 'none')
   if (sna) tp.attr('data-from-key', actionKey(sna))
 
-  /** Branches: (bundleX, source.cy) → (bundleX, target.cy) → (target.x, target.cy) + 箭头 */
+  /** Branches: (bundleX, source.cy) → (bundleX, target.cy) → (target.x, target.cy) with arrow markers */
   for (const t of targets) {
     const tna = t.node.kind === 'action' ? (t.node as MappedAction & { row: number }) : null
     const stroke = tna?.forkGhost ? FORK_GHOST_STROKE : baseStroke
@@ -1029,7 +1020,7 @@ function appendOrthoEdge(
   markerUrl: string,
   stroke: string,
   strokeWidth: number,
-  /** 联动用：from / to action key（end 节点等无 key 时传 null） */
+  /** Link metadata: originating / terminating action keys (null for synthetic end nodes). */
   fromKey: string | null = null,
   toKey: string | null = null
 ) {
@@ -1047,7 +1038,7 @@ function appendOrthoEdge(
     .attr('stroke', stroke)
     .attr('stroke-width', strokeWidth)
     .attr('marker-end', markerUrl)
-    /** 避免边线盖住 action rect，否则悬停/右键命中 path 而非 rect */
+    /** Disable pointer hits so rects/context menus remain reachable under edges */
     .attr('pointer-events', 'none')
   if (fromKey) p.attr('data-from-key', fromKey)
   if (toKey) p.attr('data-to-key', toKey)
@@ -1069,7 +1060,7 @@ function joinStrokeForFanIn(
 }
 
 /**
- * 多条边汇入同一后继：共享同一竖直线 x = bundleX（位于最右前驱出口与后继左缘之间），再水平接入后继。
+ * Many edges converge on one successor via a vertical spine at bundleX halfway between predecessors and target.
  */
 function appendOrthoFanIn(
   content: d3.Selection<SVGGElement, unknown, null, undefined>,
@@ -1102,15 +1093,10 @@ function appendOrthoFanIn(
     return
   }
   /**
-   * 多条并行支线汇入同一后继：所有 source 在同一 bundleX 处折弯，
-   * 共用「bundleX 竖直段 + bundleX → target 水平段 + 单个箭头」的主干，
-   * 否则 N 条完整折线会让最后一段水平和箭头叠 N 次（视觉上有重影 / 抖动）。
-   *
-   * - 各 source 的支线（feeder）：source.right → (bundleX, source.cy) → (bundleX, target.cy)
-   *   不带箭头，颜色按 source→target 的连线策略。
-   * - 主干（trunk）：(bundleX, target.cy) → (target.x, target.cy)，带箭头，画 **一次**。
-   *   颜色统一按「与 target 相邻」的非 ghost 走向（取首个非 ghost source；都是 ghost
-   *   则按 ghost 走向），保持视觉收口干净。
+   * Fan-in merges parallel feeder edges into one shared trunk:
+   * - Feeders omit arrow heads but keep per-edge stroke semantics.
+   * - Exactly one downstream trunk segment renders the arrow to avoid stacking N markers.
+   * - Trunk tint follows the dominant non-ghost feeder when possible so the terminator reads clean.
    */
   const maxEnd = Math.max(...sources.map(s => s.x + s.w))
   const bundleX = (maxEnd + target.x) / 2
@@ -1164,56 +1150,53 @@ interface Props {
   durationMode: boolean
   colorMode: 'status' | 'tokens' | 'type'
   /**
-   * 突出「更耗时」：仅当 `durationMs >= durationHighlightMinMs` 时保持正常亮度；
-   * 更短的 action 暗化（与 `durationMode` / `colorMode` 无关）。
+   * Duration emphasis: keep full opacity while `durationMs >= durationHighlightMinMs`;
+   * shorter actions fade (independent of color mode).
    */
   durationHighlightMinMs?: number | null
-  /** 突出「更高 token」：仅当 `tokenEstimate >= tokenHighlightMin` 时保持正常亮度。 */
+  /** Token emphasis: keep opacity while `tokenEstimate >= tokenHighlightMin`. */
   tokenHighlightMin?: number | null
-  /** 有阈值时自动滚动到第一个命中的 action（默认 true） */
+  /** When thresholds apply, auto-scroll to first matching block (default true). */
   autoScrollFirstFilteredMatch?: boolean
   /**
-   * 与 action 对应的原文查找表：须为 `segmentMessages` 与 `childBranchMessages` 的合并
-   *（见 `mergeMessagesForActionTooltipLookup`），以便用 `partId` 对齐 rect 与 `OcMessagePart`。
+   * Message table backing tooltips: merge of `segmentMessages` + `childBranchMessages`
+   * (see `mergeMessagesForActionTooltipLookup`) so `partId` aligns with rects.
    */
   tooltipMessages?: OcMessage[]
   onForkFromAction?: (action: MappedAction & { row: number }) => void
   onAnalyzeFromAction?: (action: MappedAction & { row: number }) => void
-  /** 仅用于 UI 假数据演示：在某个 action 位置视觉分叉 */
+  /** Mock-data only: synthetically split the flow at an action index */
   mockBranchForkActionIndex?: number
   /**
-   * 为 false 时不绘制终点黄点（仍有 running/pending 的 action 时）。
-   * 默认 true。
+   * When false, skip the closing end node (still useful while tools are running/pending).
+   * Defaults to true.
    */
   showFlowEndNode?: boolean
-  /** 终点黄点悬停摘要；建议与 `showFlowEndNode` 同时传入 */
+  /** Hover HTML for the terminator; pair with `showFlowEndNode`. */
   flowEndSummary?: FlowEndSummary
-  /** 嵌在父级双栏容器内时去掉内层描边，避免重复边框 */
+  /** Drop inner chrome when embedded inside split containers */
   embedded?: boolean
-  /** 限制可视区高度（px），用于上下分栏时每条 lane 固定高度可滚动 */
+  /** Cap scroll area height (px) for stacked lanes */
   viewportMaxHeight?: number
   /**
-   * 为 true 时用 CSS 隐藏滚动条（仍可用滚轮滚动）。默认 false，保留系统滚动条以便可见溢出。
+   * Hide scrollbars via CSS while keeping wheel scrolling. Default false — shows native overflow affordance.
    */
   hideScrollbar?: boolean
-  /** type-level 选中：匹配的 action group 保持原样，其他 group dim。 */
+  /** Type-level highlight: matching groups stay bright, others fade. */
   highlightedActionType?: string | null
   /**
-   * action-level 选中（单个 action 的 actionKey）。
-   * 优先级高于 highlightedActionType；命中时仅该 action 高亮，其他暗化。
+   * Action-level highlight (single `actionKey`), higher priority than type mode.
    */
   highlightedActionKey?: string | null
-  /** 选中位于其他子任务时，本 ActionFlow 整体 dim */
+  /** Dim the entire flow while another subtask owns focus */
   dimAll?: boolean
-  /** ActionFlow rect 单击 → action-level 选中 */
+  /** Rectangle click toggles action-level selection */
   onSelectAction?: (actionKey: string | null) => void
   /**
-   * Fork 对比模式：与 `actions` 中带 `forkCompareRow === 2` 的「新分支」动作配合 —
-   * 传入 fork 锚点 action 的 `actionKey()`，layout 会从锚点右缘起算新分支独立 x 轨，
-   * 并在锚点 → 第一条新分支动作之间绘制专门的「下沉」分叉边。
+   * Fork-compare: pass the anchor `actionKey()` for `forkCompareRow === 2` rows — layout allocates a branch rail east of the anchor with dedicated drop edges.
    */
   forkAnchorActionKey?: string | null
-  /** colorMode='type' 时使用的调色盘 */
+  /** Palette id when `colorMode === 'type'` */
   actionTypePaletteId?: ActionTypePaletteId
 }
 
@@ -1247,16 +1230,10 @@ export default function ActionFlowVisualization({
   const markerId = `action-flow-arrow-${reactId}`
   const tooltipId = `action-flow-tip-${reactId}`
   /**
-   * react-tooltip v5 的初始扫描 (querySelectorAll) 运行在 useEffect（paint 后），
-   * 而 D3 绘制运行在 useLayoutEffect（paint 前）。理论上 D3 先完成，扫描后执行。
-   *
-   * 但实测发现：react-tooltip 内部 [anchorsBySelect, activeAnchor] effect 在
-   * 扫描完成后立即触发 setActiveAnchor(anchors[0])，导致 activeAnchor dep 变化，
-   * 进而重建 MutationObserver 和事件监听器 effect；在这段"重建空窗期"若用户
-   * 已悬停，mouseenter 没有捕获到。
-   *
-   * 解决方案：延迟 Tooltip 挂载到首次渲染之后，保证 initial scan 运行时
-   * SVG 内容已稳定，且 D3 在此次 useEffect 批次中不会再有属性写入。
+   * react-tooltip v5 performs its initial DOM scan inside `useEffect` (after paint) while D3 renders in `useLayoutEffect`.
+   * In practice tooltip’s `[anchorsBySelect, activeAnchor]` handler fires right after scanning, resetting observers;
+   * if the mouse already hovers during that teardown window `mouseenter` may never register.
+   * Mount tooltips after the first paint batch so anchors exist before the observer spins up.
    */
   const [tooltipMounted, setTooltipMounted] = useState(false)
   useEffect(() => {
@@ -1284,9 +1261,7 @@ export default function ActionFlowVisualization({
       includeEndNode: showFlowEndNode,
       forkAnchorActionKey,
     })
-    /** 是否处于 fork 对比模式：layout 中存在任意「新分支」动作（含新分支里的 task / 子 session）。
-     *  注意不能用 actionSessionKey===session:fork-new-branch 判断 —— 新分支 Subagent 的
-     *  session key 已变成 task 子区域。 */
+    /** Fork compare when any forked-branch action appears (tasks included). Cannot rely solely on `session:fork-new-branch` because forked Subagents still key child sessions differently. */
     const hasForkNewBranchInLayout = layout.some(
       (item) =>
         item.node.kind === 'action' &&
@@ -1349,12 +1324,12 @@ export default function ActionFlowVisualization({
       )
     }
 
-    /** 并行多 lane 汇入同一后继时由 `appendOrthoFanIn` 绘制，此处跳过避免重复折线 */
+    /** Skip sequential segments already handled inside `appendOrthoFanIn`. */
     const parallelJoinSkip = new Set<string>()
-    /** 并行 fan-out 由 `appendOrthoFanOut` 统一画，跳过 main sequential loop 的重复边 */
+    /** Parallel fan-outs render via `appendOrthoFanOut` — omit duplicates from primary loop */
     const parallelFanOutSkip = new Set<string>()
 
-    /** 并行组：lane 内连线、前驱→各 lane 首、各 lane 末→后继（多源汇入同一 bundleX） */
+    /** Parallel bundles: intra-lane links, predecessor→lane heads, tails→successor (merged fan-in/out). */
     const groupIdToIndices = new Map<string, number[]>()
       for (let i = 0; i < layout.length; i++) {
         const item = layout[i]!
@@ -1380,25 +1355,23 @@ export default function ActionFlowVisualization({
       const indexSet = new Set(indices)
 
       /**
-       * 并行组前驱/后继的「搜索 session」。
+       * Which session hosts parallel predecessors/successors.
        *
-       * 问题根源：并行 Subagent task 的 actionSessionKey = 'session:task:callID'，
-       * 而它们真正的前驱/后继在 session:main（或父 task 的 session）里——用 groupSession
-       * 过滤会把真正的 pred/succ 全部排除，导致只有主循环画了一条相邻边，第二条永远缺失。
+       * Parallel Subagent rects key `session:task:callID` even though predecessors live in `session:main`.
+       * Filtering strictly by the group session would drop real edges — only one adjacent edge would survive.
        *
-       * 修正策略：
-       * - Subagent（非 child-session）：它们由外部 session 发起，搜索范围 = 'session:main'
-       *   （或更准确地：根节点发起的就是 main，嵌套的以 parentTaskCallID 定位）
-       * - child-session 里的并行 action：搜索范围 = 'session:task:parentTaskCallID'
-       * - 普通 main action：直接用 actionSessionKey
+       * Resolution:
+       * - Subagent originating outside child sessions → search `'session:main'` (nested parents use parentTask anchors)
+       * - Parallel actions inside child sessions → `'session:task:<parentTaskCallID>'`
+       * - Ordinary main-band actions → `actionSessionKey`
        *
-       * 此外，fork 边界（ghost / new-branch）仍须单独过滤，防止跨分支。
+       * Still respect fork partitions (ghost vs new-branch) separately.
        */
       const firstNode = groupActions[0]!.node
       const groupIsGhost = firstNode.forkGhost === true
       const groupIsNewBranch = isNewBranchAction(firstNode)
 
-      /** 并行组的 "发起方 session"：pred/succ 所在的 session */
+      /** Session owning pred/succ search */
       const groupSearchSession: string = (() => {
         if (
           firstNode.actionType === 'Subagent' &&
@@ -1411,7 +1384,7 @@ export default function ActionFlowVisualization({
         return actionSessionKey(firstNode)
       })()
 
-      /** 是否通过 fork 边界检查（只限于同一分叉轨道） */
+      /** Fork boundary predicate for this parallel bundle */
       const passForkBoundary = (na: MappedAction & { row: number }): boolean => {
         if (groupIsGhost) return na.forkGhost === true
         if (groupIsNewBranch) return isNewBranchAction(na)
@@ -1450,9 +1423,9 @@ export default function ActionFlowVisualization({
       }
       if (succIdx < 0) {
         /**
-         * 并行组没有显式后继时连到「自己泳道」的 end：
-         *  - 普通模式：唯一一个 main end；
-         *  - Fork 对比：main 组接 ghost end，fork-new-branch 组接 new branch end。
+         * When no explicit successor exists, wire each bundle to its matching terminator:
+         *  - Vanilla mode: lone `session:main` end
+         *  - Fork compare: main bundle → ghost end, fork bundle → fork end
          */
         for (let i = 0; i < layout.length; i++) {
           if (indexSet.has(i)) continue
@@ -1491,7 +1464,7 @@ export default function ActionFlowVisualization({
           const tb = (layout[b]!.node as MappedAction & { row: number }).sortTime
           return ta - tb
         })
-        /** 泳道内相邻连线 */
+        /** Intra-lane sequential connectors */
         for (let i = 0; i < sortedIdx.length - 1; i++) {
           const fromIdx = sortedIdx[i]!
           const toIdx = sortedIdx[i + 1]!
@@ -1514,8 +1487,7 @@ export default function ActionFlowVisualization({
       }
 
       /**
-       * Fan-out：pred → 各 lane 首，使用 appendOrthoFanOut 共享 bundleX，
-       * 同时把所有 predIdx-firstIdx 对加入 parallelFanOutSkip，防止主循环重复画。
+       * Fan-out predecessor → lane heads via `appendOrthoFanOut`, register each pred→first skip token for the sequential pass.
        */
       if (predItem && predIdx >= 0 && firstIndices.length > 0) {
         for (const fi of firstIndices) {
@@ -1530,7 +1502,7 @@ export default function ActionFlowVisualization({
         )
       }
 
-      /** Fan-in：各 lane 末 → succ，使用 appendOrthoFanIn 共享 bundleX */
+      /** Fan-in lane tails → successor using shared bundle column */
       if (succItem && succIdx >= 0 && lastIndices.length > 0) {
         for (const li of lastIndices) {
           parallelJoinSkip.add(`${li}-${succIdx}`)
@@ -1545,9 +1517,10 @@ export default function ActionFlowVisualization({
       }
     }
 
-    /** 是否属于 fork 之后的「分叉双轨」（ghost 历史尾迹 / 新分支）—— 这两条轨上的 sortTime
-     *  会在合并后的 layout 里交错排列，「相邻成对」连线会被 cross-branch skip 全部杀掉，
-     *  必须改用专门的「按 sortTime 在自身支线内」扫一遍。 */
+    /**
+     * Post-fork rails (ghost tails vs forked timeline) interleave sortTime — sequential adjacency is unsafe.
+     * `connectPostAnchorTrack` restores edges by scanning each rail independently.
+     */
     const isPostAnchor = (a: MappedAction & { row: number }) =>
       a.forkGhost === true || isNewBranchAction(a)
 
@@ -1558,15 +1531,11 @@ export default function ActionFlowVisualization({
         const pa = a.node as MappedAction & { row: number }
         const pb = b.node as MappedAction & { row: number }
         /**
-         * Post-anchor 的相邻边一律跳过 —— ghost 与新分支因 sortTime 交错而错位，
-         * 用相邻关系连线会漏掉同支线内的真正后继。两条支线的内部连线由后面专门的
-         * `connectPostAnchorTrack` 各扫一次。
+         * Skip sequential neighbors between rails after the fork anchor — mis-paired adjacency skips true successors (`connectPostAnchorTrack` redraws separately).
          */
         if (isPostAnchor(pa) && isPostAnchor(pb)) continue
         /**
-         * Fork 比对：跨越「历史轨迹」与「新分支」之间的隐式相邻边一律跳过。
-         * - anchor → 第一条新分支动作 由后续显式分叉边绘制；
-         * - 末尾 ghost → 第一条新分支动作 不是真实连续关系（两条平行支线），不画。
+         * Skip pseudo-adjacency across legacy ghosts vs fork branch (anchor linkage handled explicitly).
          */
         const aIsNewBranch = isNewBranchAction(pa)
         const bIsNewBranch = isNewBranchAction(pb)
@@ -1586,8 +1555,7 @@ export default function ActionFlowVisualization({
       if (parallelJoinSkip.has(`${i}-${i + 1}`)) continue
       if (parallelFanOutSkip.has(`${i}-${i + 1}`)) continue
       /**
-       * 进入 end 节点的隐式相邻边一律跳过 —— end 的连接由后面「显式收尾」段统一画，
-       * 既兼容普通模式（一个 end），也兼容 fork 对比（两个 end，各自只连本泳道最后一条 action）。
+       * Skip implicit hops into terminator nodes — dedicated closing pass attaches each lane’s trailing action correctly.
        */
       if (b.node.kind === 'end') continue
       const x1 = a.x + a.w
@@ -1627,12 +1595,10 @@ export default function ActionFlowVisualization({
     }
 
     /**
-     * 分叉支线内部按 sortTime 扫一遍，连相邻 action。
-     * - ghost 历史尾迹（forkGhost=true）独立成轨；
-     * - 新分支（forkCompareRow=2）独立成轨；
-     * - 同一轨上不区分 session（与 fork 之前 main→Subagent→主流恢复 的视觉一致）；
-     * - 跳过：Subagent→子会话首节点（由专门的紫色分叉边绘制）、并行同组兄弟、并行 fan-in
-     *   已收走的对。
+     * Stitch same-rail actions post-fork sorted by `sortTime`.
+     * - Ghost stack (`forkGhost`) vs fork stack (`forkCompareRow === 2`) stay independent.
+     * - Inside a rail ignore session distinctions (reads like pre-fork Main→Subagent flow).
+     * - Skip purple Subagent→child entry edges, intra-parallel siblings, and fan-in pairs already routed.
      */
     const connectPostAnchorTrack = (
       predicate: (a: MappedAction & { row: number }) => boolean,
@@ -1690,9 +1656,8 @@ export default function ActionFlowVisualization({
       const { node, x: nx, y: ny, w, h } = item
       if (node.kind === 'end') {
         /**
-         * Fork 对比模式下的「历史端」(sessionRegion='main' 且存在新分支) 用灰色圆，
-         * 表示这是 fork 之前的旧轨迹收尾；新分支端 / 普通模式仍用 palette.end 黄色。
-         * 历史端不显示 summary tooltip（数据是当下新 session 的，挂上去会误导）。
+         * Ghost terminator (`sessionRegion='main'` with active fork rails) renders neutral grey;
+         * forked / baseline ends keep `palette.end` yellow. Omit summary tooltip on ghosts (current-session data mismatch).
          */
         const isGhostEnd =
           node.sessionRegion === 'main' && hasForkNewBranchInLayout
@@ -1731,7 +1696,16 @@ export default function ActionFlowVisualization({
         actionTypePaletteId,
       )
 
-      /** 每个 action 包一个 group：data-action-type 用于 type-level dim；data-action-key 用于 action-level dim 与点击 */
+      let stateOutlineStroke = 'none'
+      let stateOutlineStrokeW = 0
+      if (!isGhost && !isUserRequest) {
+        if (act.status === 'running' || act.status === 'pending') {
+          stateOutlineStroke = statusColors(act.status).stroke
+          stateOutlineStrokeW = 1.75
+        }
+      }
+
+      /** Each action mounts a `<g>` with tooltip + dim metadata keyed by action type/key */
       const ak = actionKey(act)
       const actionG = content
         .append('g')
@@ -1756,8 +1730,8 @@ export default function ActionFlowVisualization({
             .attr('height', h)
             .attr('rx', Math.max(1.5, Math.min(4, Math.min(w, h) * 0.22)))
             .attr('fill', fill)
-            .attr('stroke', 'none')
-            .attr('stroke-width', 0)) as unknown as d3.Selection<
+            .attr('stroke', stateOutlineStroke)
+            .attr('stroke-width', stateOutlineStrokeW)) as unknown as d3.Selection<
         SVGGraphicsElement,
         unknown,
         null,
@@ -1766,8 +1740,7 @@ export default function ActionFlowVisualization({
       actionTarget
         .style('cursor', 'pointer')
         /**
-         * UserRequest 是 transparent fill 的空心圆；默认 SVG hit-test 容易只命中圆环 stroke，
-         * 鼠标在圆心时 target 会退到父级 svg，react-tooltip 就收不到 hover。
+         * `UserRequest` uses a hollow circle — default hit-testing ignores transparent interiors, breaking tooltips centered on the ring.
          */
         .attr('pointer-events', 'all')
         .attr('data-tooltip-id', tooltipId)
@@ -1779,7 +1752,7 @@ export default function ActionFlowVisualization({
           onSelectAction(ak)
         })
       }
-      /** 过滤状态显式写入，避免旧 DOM 复用时出现残留 dim */
+      /** Persist filter dim flags so reused DOM nodes do not flicker stale opacity */
       actionG.attr('data-filter-dim', matchesHighlight ? '0' : '1')
       const canContext =
         act.messageID && (onForkFromAction || onAnalyzeFromAction) && act.forkGhost !== true
@@ -1795,8 +1768,7 @@ export default function ActionFlowVisualization({
       if (
         !isGhost &&
         !isUserRequest &&
-        (act.status === 'running' || act.status === 'pending') &&
-        colorMode === 'status'
+        (act.status === 'running' || act.status === 'pending')
       ) {
         actionTarget.attr('class', sc.isLongRunning ? 'action-flow-running-long' : 'action-flow-running')
       }
@@ -1815,7 +1787,7 @@ export default function ActionFlowVisualization({
           iconBox,
         )
       }
-      /** Duration mode: 块够宽时在左上角显示实际时长（替代旧的 >60s 阈值徽标） */
+      /** Duration mode: stamp readable duration inside wide blocks (> legacy 60 s badges) */
       if (durationMode && !isGhost && w >= 52 && act.durationMs > 0) {
         actionG
           .append('text')
@@ -1829,19 +1801,17 @@ export default function ActionFlowVisualization({
           .attr('pointer-events', 'none')
       }
 
-      /** 需求：任何情况下都不显示右上角三个点操作按钮 */
+      /** Omit inline “⋯” menus per product decision */
     })
 
     /**
-     * 显式「收尾」连线：每个 end 节点 ← 本支线最右一条 action（按 x+w 取最右）。
-       *  - 普通模式：唯一 main end ← 主会话最右 action。
-       *  - Fork 对比：
-       *      ghost end (sessionRegion='main') ← 历史最右 action（包括历史 task 子 session 末端）；
-       *      new branch end (sessionRegion='fork-new-branch') ← 新分支最右 action（包括新分支
-       *      task 子 session 末端）。
-       *    判别用 forkCompareRow=2，而不是 actionSessionKey —— 否则新分支 task 区域里的最末
-       *    动作会漏掉。
-       *  - 已被并行组 fan-in 收走的 end 跳过（避免重复折线）。
+     * Explicit terminator wiring: each end node attaches to its rail’s eastern-most action (`x+w` maxima).
+       *  - Vanilla: single main end anchored to farthest legacy action on the spine.
+       *  - Fork compare:
+       *      ghost/main end ← rightmost legacy action (including nested task tails);
+       *      fork end ← rightmost forked action (nested tasks included).
+       *    Decide membership with `forkCompareRow === 2`, not solely `actionSessionKey`, so forked-task tails stay connected.
+       *  - Skip terminator pairs fan-in already handled (prevents doubling edges).
        */
       for (let endIdx = 0; endIdx < layout.length; endIdx++) {
       const endItem = layout[endIdx]!
@@ -1883,12 +1853,11 @@ export default function ActionFlowVisualization({
       }
 
       /**
-       * Fork 对比显式分叉边：anchor 同时扇出到两条支线的起点：
-       * - 历史 ghost 起点（fork 后旧轨迹）；
-       * - 新分支起点（forkCompareRow=2）。
+       * Fork fan-out wiring: anchor fans into both rails’ first parent-scope actions —
+       * - earliest ghost predecessor (post-fork leftover trail)
+       * - earliest fork-branch parent action (`forkCompareRow === 2`)
        *
-       * 两个起点都按 sortTime 取最早的「父侧动作」（排除 child-session，避免直接连进子会话内部）。
-       * 这样即使 ghost/new-branch 在合并时间轴里交错，anchor 也能稳定连到两条支线起点。
+       * Ignore child-session internals so forks land on rails, not nested bands.
        */
       if (hasForkNewBranchInLayout && forkAnchorActionKey) {
       let anchorItem: (typeof layout)[number] | undefined
@@ -1934,9 +1903,7 @@ export default function ActionFlowVisualization({
       }
 
       /**
-       * Fork 前缀兜底：确保「anchor 之前的历史主链」始终连续（1→2→...→anchor）。
-       * 某些布局/分组下这段关系不一定是 layout 相邻项，会被通用相邻连线漏掉，
-       * 这里按 sortTime 串起来并在 edge 不存在时补画。
+       * Safety net before the fork anchor: reconnect historical spine steps `1→2→…→anchor` when sequential layout misses hops.
        */
       if (hasForkNewBranchInLayout && forkAnchorActionKey) {
         let anchorSortTime = Infinity
@@ -1989,7 +1956,7 @@ export default function ActionFlowVisualization({
         }
       }
 
-      /** 父 Subagent(task) → 子会话首节点 的紫色分叉 */
+      /** Purple branch from parent Subagent(task) rects into nested child-session entry */
       for (let i = 0; i < layout.length - 1; i++) {
       const item = layout[i]!
       const node = item.node
@@ -2095,7 +2062,7 @@ export default function ActionFlowVisualization({
         })
 
         const firstHistoryX = historyStartX
-        // 与主流程边一致：水平 → 竖直 → 水平（中点取两端 x 的中点，避免出现斜线）
+        // Match primary edges: orthogonal H-V-H pivot at midpoint to avoid diagonal segments
         const x1 = forkItem.x + forkItem.w
         const y1 = forkItem.cy
         const x2 = firstHistoryX
@@ -2117,11 +2084,11 @@ export default function ActionFlowVisualization({
         }
       }
 
-    /** 边线先画、rect 后画时 rect 会压住 path；全部画完后把连线抬到最上层，避免「action 盖住线」 */
+    /** Rectangles paint after edges by default — re-raise paths so strokes stay readable */
     content.selectAll<SVGPathElement, unknown>('path.afv-edge').raise()
 
     const desiredH = totalH + topOffset
-    // 关键：使用像素级固定画布，不用 viewBox 缩放，避免不同行数时 action 尺寸变化
+    // Pixel-sized SVG (no scaling viewBox) keeps block proportions stable regardless of lane count
     root.attr('width', totalW).attr('height', desiredH)
     svg.removeAttribute('viewBox')
 
@@ -2161,15 +2128,11 @@ export default function ActionFlowVisualization({
   ])
 
   /**
-   * 统一 dim 流：合并 selection（type / action）、阈值过滤、跨子任务 dim_All。
-   * - dimAll：整张 ActionFlow 整体降透（其他子任务正在被选中）
-   * - selection：type 命中或 action 命中 → 不在命中集合的 group dim
-   * - duration：data-duration-dim=1 的 group dim（旧蓝环 / 黑遮罩 已被替换为这套统一 dim）
-   * - 连线：仅当至少一端在命中集合 → 不 dim；否则 dim
-   * 命中规则：
-   *   - 优先 highlightedActionKey（action 级）→ 命中集合 = { 该 key }
-   *   - 否则 highlightedActionType（type 级）→ 命中集合 = data-action-type === t 的所有 key
-   *   - 都无 → 命中集合 = null（不做联动 dim，仅 duration dim 生效）
+   * Unified dimming pipeline merges cross-subtask `dimAll`, type-level highlighting, thresholds, and edges.
+   * - `dimAll`: fade entire visualization while another card holds focus.
+   * - **`highlightedActionKey`**: keep peers at full-opacity (no perimeter stroke — selection is conveyed by connectors only).
+   * - **`highlightedActionType`** (no key): fades groups outside the matching type bucket.
+   * - Threshold mode tags `data-filter-dim` on groups / edges independently.
    */
   useLayoutEffect(() => {
     const svg = svgRef.current
@@ -2189,7 +2152,7 @@ export default function ActionFlowVisualization({
       svg.style.opacity = ''
     }
 
-    /** 命中集合（action 级直接是单 key；type 级聚合所有同 type 的 key） */
+    /** Highlight bucket: singleton key vs every key sharing the hovered type */
     let highlightSet: Set<string> | null = null
     if (highlightedActionKey) {
       highlightSet = new Set([highlightedActionKey])
@@ -2209,13 +2172,19 @@ export default function ActionFlowVisualization({
       return
     }
 
+    /** Single-action click: emphasize with a stroke ring only — do not fade other glyphs. */
+    const outlineOnlySingleAction = Boolean(highlightedActionKey)
+
     for (const g of groups) {
       const k = g.getAttribute('data-action-key') ?? ''
       const filterDimActive =
         highlightSet === null &&
         thresholdFilterActive &&
         g.getAttribute('data-filter-dim') === '1'
-      const selDim = highlightSet !== null && !highlightSet.has(k)
+      const selDim =
+        outlineOnlySingleAction
+          ? false
+          : highlightSet !== null && !highlightSet.has(k)
       g.style.opacity = (selDim || filterDimActive) ? DIM : '1'
     }
 
@@ -2223,12 +2192,12 @@ export default function ActionFlowVisualization({
       const fk = e.getAttribute('data-from-key')
       const tk = e.getAttribute('data-to-key')
       let dim = false
-      if (highlightSet !== null) {
+      if (highlightSet !== null && !outlineOnlySingleAction) {
         const fromHit = fk !== null && highlightSet.has(fk)
         const toHit = tk !== null && highlightSet.has(tk)
         dim = !fromHit && !toHit
       }
-      /** 连线也尊重阈值过滤：两端都不达标则 dim */
+      /** Edges inherit threshold dimming when both endpoints fail the filter */
       if (!dim && highlightSet === null && thresholdFilterActive && (fk || tk)) {
         const esc = (s: string) =>
           typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(s) : s.replace(/"/g, '\\"')
@@ -2244,7 +2213,7 @@ export default function ActionFlowVisualization({
 
   const mockOffset = mockBranchForkActionIndex !== undefined ? ROW_H : 0
   const contentHeight = layoutEstimate.totalH + mockOffset
-  /** 可视区域下限至少能容纳两行泳道，避免高度塌缩；上限仍限制最大可视高度，超出则内部滚动 */
+  /** Scroll port enforces a two-lane minimum height; cap with `viewportMaxHeight` for inner scrolling */
   const minContentHeight = MIN_SVG_CONTENT_HEIGHT
   const maxVisibleHeight = Math.max(
     TOP_PAD + MAX_VISIBLE_ROWS * ROW_H + BLOCK_H + BOTTOM_PAD,
@@ -2255,10 +2224,10 @@ export default function ActionFlowVisualization({
   if (typeof viewportMaxHeight === 'number' && Number.isFinite(viewportMaxHeight) && viewportMaxHeight > 0) {
     viewportHeight = Math.min(viewportHeight, viewportMaxHeight)
   }
-  /** 仅作上限：内容较矮时不占满高度，避免「未溢出也出现滚动条」；超出 maxHeight 时才出现滚动条 */
+  /** `maxHeight` caps overflow only — short content keeps intrinsic height (no phantom scrollbars) */
   const scrollAreaMaxHeight = viewportHeight
 
-  /** 内层滚动区不设 border：否则 box-sizing 下内容区 = maxHeight − 边框，易比 SVG 高度少 2px 而误出纵向条 */
+  /** Avoid inner borders — `box-sizing` would shrink scrollable area vs SVG by 2 px and falsely show scrollbars */
   const scrollInner = (
     <div
       className={hideScrollbar ? 'action-flow-scroll--hide-scrollbar' : undefined}
@@ -2277,6 +2246,7 @@ export default function ActionFlowVisualization({
     >
       <svg
         ref={svgRef}
+        data-action-flow-root="1"
         style={{
           display: 'block',
           verticalAlign: 'top',
@@ -2324,7 +2294,7 @@ export default function ActionFlowVisualization({
           delayHide={220}
           opacity={1}
           clickable
-          /** 内层 overflow:auto 滚动会触发全局 scroll，默认会立刻关掉 tooltip */
+          /** Inner `overflow:auto` can bubble `scroll` globally and dismiss tooltips prematurely */
           globalCloseEvents={{ scroll: false, resize: true, escape: true }}
           arrowColor="#f8fafc"
         />

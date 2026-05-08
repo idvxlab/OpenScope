@@ -11,8 +11,8 @@ export class ErrorBoundary extends Component<Props, State> {
     return { error }
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[cockpit-ui] ErrorBoundary', error, info.componentStack)
+  componentDidCatch(_error: Error, _info: ErrorInfo) {
+    /* Errors are shown inline via render(); avoid console noise */
   }
 
   render() {
@@ -26,9 +26,10 @@ export class ErrorBoundary extends Component<Props, State> {
             lineHeight: 1.5,
           }}
         >
-          <h1 style={{ fontSize: 18, marginBottom: 12 }}>cockpit-ui 渲染出错</h1>
+          <h1 style={{ fontSize: 18, marginBottom: 12 }}>OpenScope failed to render</h1>
           <p style={{ color: '#444', marginBottom: 12 }}>
-            请打开开发者工具 (F12) → Console 查看完整堆栈。若为 OpenCode 模型配置问题，请见下方说明。
+            Open Developer Tools (F12) → Console for the full stack trace. If this is related to OpenCode model
+            configuration, check your server-side settings as well.
           </p>
           <pre
             style={{
@@ -55,7 +56,7 @@ export class ErrorBoundary extends Component<Props, State> {
               background: '#fff',
             }}
           >
-            重试
+            Try again
           </button>
         </div>
       )

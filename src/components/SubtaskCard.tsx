@@ -24,7 +24,7 @@ import { actionKey } from '../utils/actionKey'
 const fontSans =
   "'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif"
 
-/** 子任务卡片最小高度；内容（如分叉可视化）变高时卡片随内容增高 */
+/** Minimum card height; grows with richer content such as fork comparison */
 const CARD_MIN_HEIGHT = 220
 const LONG_RUNNING_MS = 60_000
 
@@ -32,28 +32,28 @@ interface SubtaskCardProps {
   subtask: AssistantSubtask
   messages: OcMessage[]
   displayIndex: number
-  /** DOM 定位索引：用于连线/滚动，需与 App 中 linkedSubtaskIndex 使用同一坐标系 */
+  /** DOM index for connectors/scroll — must match `linkedSubtaskIndex` in App */
   cardIndex?: number
   isLinked?: boolean
   onSelectSubtask?: () => void
   onForkFromAction?: (action: MappedAction & { row: number }, ctx: ForkFromActionContext) => void
   onAnalyzeFromAction?: (action: MappedAction & { row: number }) => void
-  /** 与 OpenCode 多目录一致，拉取子会话消息时必带 */
+  /** Required when fetching child sessions with multi-directory OpenCode */
   sessionDirectory?: string
   /** Forked session: local read-only snapshot for comparison (not in model context) */
   forkPanelSnapshotBundle?: ForkPanelSnapshotBundle | null
-  /** 当前选中的 actionType；同 type 在 ActionFlow 加亮（预留，当前无入口） */
+  /** Selected action type — highlight same type in ActionFlow (reserved; no UI entry yet) */
   selectedActionType?: string | null
-  /** 当前选中的单个 action key；优先级高于 selectedActionType */
+  /** Selected action key — takes precedence over `selectedActionType` */
   selectedActionKey?: string | null
-  /** 选中位于其他子任务卡片时，本卡所有 action 应整体 dim */
+  /** When another subtask holds the selection, dim every action in this card */
   otherSubtaskHasSelection?: boolean
-  /** ActionFlow rect 单击 */
+  /** ActionFlow rect click */
   onSelectActionFromFlow?: (actionKey: string | null) => void
-  /** 全局共享颜色模式（由上层子任务面板控制） */
+  /** Shared coloring mode controlled by parent subtask panel */
   colorBy: ColorByMode
   onColorByChange: (mode: ColorByMode) => void
-  /** 全局共享 type 调色盘（由上层子任务面板控制） */
+  /** Shared action-type palette from parent panel */
   actionTypePaletteId: ActionTypePaletteId
 }
 
@@ -131,10 +131,10 @@ export default function SubtaskCard({
   const [nowTick, setNowTick] = useState(() => Date.now())
   const [actionsDurationOn, setActionsDurationOn] = useState(false)
   const [filterMode, setFilterMode] = useState<FilterMode>('duration')
-  /** 仅用于 DOM 锚点（fork/scroll 等需要时取 outer wrapper） */
+  /** DOM anchor only — use outer wrapper for fork/scroll */
   const cardRef = useRef<HTMLDivElement | null>(null)
   const [childBranchActions, setChildBranchActions] = useState<(MappedAction & { row: number })[]>([])
-  /** task 子会话原文，用于 Changes 合并统计 write/edit 路径 */
+  /** Raw child-session messages merged into Changes (write/edit paths) */
   const [childBranchMessages, setChildBranchMessages] = useState<OcMessage[]>([])
 
   const m = useMemo(
@@ -146,7 +146,7 @@ export default function SubtaskCard({
     [subtask, messages, displayIndex, nowTick, childBranchMessages],
   )
 
-  /** 本子任务段内的 user 起点 + assistant 消息（顺序与全局 timeline 一致） */
+  /** Leading user indices + assistants in global timeline order */
   const segmentMessages = useMemo((): OcMessage[] => {
     const indices = [
       ...(subtask.userMessageIndices ?? []),
@@ -170,7 +170,7 @@ export default function SubtaskCard({
     () => detectParallelCallMapping(segmentMessages, nowTick),
     [segmentMessages, nowTick]
   )
-  /** 并行子会话共享同一 band；非并行仍按唯一 childSessionID 递增。 */
+  /** Parallel children share one band lane; sequential children still bump by session id order */
   const childSessionBandMap = useMemo(
     () => buildChildSessionBandMap(taskDescriptors, parallelByCallId),
     [taskDescriptors, parallelByCallId]
@@ -198,14 +198,14 @@ export default function SubtaskCard({
         try {
           const msgs = await getMessages(
             d.childSessionID,
-            `子会话 branch · ${d.callID.slice(0, 12)}`,
+            `Child session · ${d.callID.slice(0, 12)}`,
             sessionDirectory,
           )
           const branchOpts = {
             branchChildSessionID: d.childSessionID,
             parentTaskCallID: d.callID,
             anchorSortTime: d.anchorSortTime,
-            /** 按 session 固定分配进程带：第 1 个唯一子 session=1，第 2 个=2 ... */
+            /** Stable lane index per distinct child session: first unique id = 1, second = 2, … */
             sessionBandIndex: childSessionBandMap.get(d.childSessionID) ?? 1,
             nowMs: nowTick,
           }
@@ -320,7 +320,7 @@ export default function SubtaskCard({
     if (filterMode === 'duration') return formatDurationMs(activeFilterDomain.max)
     return `${Math.round(activeFilterDomain.max)} tok`
   }, [filterMode, activeFilterDomain])
-  /** 仅当用户把阈值高于数据下界时才触发 dim；停在默认下界时与未筛选一致 */
+  /** Dim only once the slider moves above domain min — default min matches “no filter” */
   const durationHighlightForFlow =
     filterMode === 'duration' &&
     filterTouched &&
@@ -336,22 +336,21 @@ export default function SubtaskCard({
       ? tokenHighlightMin
       : null
 
-  /** 与 `flowActions` 中 `partId` 查找一致：父段消息 + 子会话拉取消息 */
+  /** Matches `mergeMessagesForActionTooltipLookup`: parent segment + fetched child rows */
   const tooltipLookupMessages = useMemo(
     () => mergeMessagesForActionTooltipLookup(segmentMessages, childBranchMessages),
     [segmentMessages, childBranchMessages],
   )
 
   /**
-   * Fork 后：在同一 SVG 内合并「fork 前共享前缀」+「锚点后旧轨迹（灰幽灵）」+「新分支」。
+   * After fork: one SVG merges shared pre-fork prefix + gray ghost after the anchor + the new branch.
    *
-   * 关键设计：fork 前的 action 是新 session 上下文的天然组成部分（OpenCode 的 fork 把消息
-   * 复制到了新 session），它们就在 `flowActions` 里。所以 pre-fork + 新分支都直接复用
-   * `flowActions` 的对象 —— 这样 treemap、debug panel、tooltip、selection 联动等所有
-   * 下游逻辑都能正确认识它们；只有 anchor 之后的「旧分支假设轨迹」（ghost）才需要从
-   * snapshot 拿（因为新 session 里没有这一段）。
+   * Fork-pre actions belong to the new OpenCode session context (messages are copied on fork) and already
+   * live in `flowActions`. Pre-fork plus the live branch therefore reuse the **same** action objects so
+   * treemap, tooltip, and selection state stay consistent. Only post-anchor “hypothetical old branch” steps
+   * come from the snapshot ghost stream (absent in the forked session timeline).
    *
-   * 兜底：如果新 session 没回填 pre-fork 消息（极端情况），退化为完全用 snapshot 当 pre-fork。
+   * Fallback: when the new session omits copied pre-fork turns, treat the entire snapshot prefix as pre-fork.
    */
   const forkMergedFlow = useMemo(() => {
     if (!forkPanelSnapshotBundle || forkPanelSnapshotBundle.version !== 2) return null
@@ -366,11 +365,10 @@ export default function SubtaskCard({
 
     const oldActions = b.snapshot.flowActions
     const oldAnchorIdx = oldActions.findIndex(matchAnchor)
-    /** 锚点必须能在 snapshot 中定位；找不到时不进入合并模式 */
+    /** Anchor must resolve inside the snapshot; otherwise skip merged mode */
     if (oldAnchorIdx < 0) return null
 
-    /** 优先在当前 session 里定位锚点 —— 拿到的就是 flowActions 自己的对象，
-     *  treemap / 选中联动 / 闪烁高亮 都共享同一份引用。 */
+    /** Prefer locating the anchor inside the live session so treemap/selection share object identity */
     const currentAnchorIdx = flowActions.findIndex(matchAnchor)
 
     let preForkAndAnchor: (MappedAction & { row: number })[]
@@ -379,24 +377,23 @@ export default function SubtaskCard({
       preForkAndAnchor = flowActions.slice(0, currentAnchorIdx + 1)
       postAnchorCurrent = flowActions.slice(currentAnchorIdx + 1)
     } else {
-      /** 兜底：新 session 没回填 fork 前的消息 —— 用 snapshot 的前缀，
-       *  整个 flowActions 都视为新分支 */
+      /** Fallback when forked session lacks copied history — treat snapshot prefix as canonical */
       preForkAndAnchor = oldActions.slice(0, oldAnchorIdx + 1)
       postAnchorCurrent = flowActions
     }
 
     const anchorActionKey = actionKey(preForkAndAnchor[preForkAndAnchor.length - 1]!)
-    /** 当前 session 语义：fork 前 + 当前分支（用于 treemap / 统计 / 选中联动） */
+    /** Live-session semantic stream: prefix + post-anchor branch */
     const sessionActions = [...preForkAndAnchor, ...postAnchorCurrent].sort(
       (x, y) => x.sortTime - y.sortTime,
     )
 
-    /** 锚点之后的旧轨迹：snapshot 数据，打 forkGhost 标 */
+    /** Old branch tail from snapshot — mark `forkGhost` */
     const ghostSuffix = oldActions
       .slice(oldAnchorIdx + 1)
       .map((a) => ({ ...a, forkGhost: true }))
 
-    /** 新分支：当前 session 锚点之后的部分，打 forkCompareRow=2 标 */
+    /** Forked trajectory after anchor — tag `forkCompareRow = 2` */
     const newBranch = postAnchorCurrent.map((a) => ({ ...a, forkCompareRow: 2 as const }))
 
     const merged = [...preForkAndAnchor, ...ghostSuffix, ...newBranch].sort(
@@ -420,9 +417,9 @@ export default function SubtaskCard({
   useEffect(() => {
     if (!hasActiveRunningAction) return
     /**
-     * 2s 一次 tick：每次 tick 会让 parentFlowActions / flowActions 引用刷新，
-     * ActionFlowVisualization 的 d3 effect 整张 SVG 重建一次（视觉上是一次闪烁）。
-     * 1Hz 太密（生成时连续闪），2s 在「duration 实时感」与「不刺眼」之间更平衡。
+     * 2s heartbeat: bumps `parentFlowActions`/`flowActions` references so ActionFlowVisualization’s D3 effect
+     * rebuilds (~one visible flash per tick). 1 Hz felt too frantic during streamed generation — 2s balances
+     * “live duration” readability with calmer visuals.
      */
     const id = window.setInterval(() => setNowTick(Date.now()), 2000)
     return () => window.clearInterval(id)
@@ -430,13 +427,12 @@ export default function SubtaskCard({
 
   const durationLabel = formatDurationMs(m.durationMs)
   const changesLabel = String(m.mutatedFileCount)
-  /** 无进行中 action 时才显示流程终点黄点（避免子任务一开始就出现「收尾」） */
+  /** Hide the golden end capsule while tools are active so tasks don’t look “done” prematurely */
   const showFlowEndNode = !hasActiveRunningAction && flowActions.length > 0
 
   /**
-   * 稳化 flowEndSummary 引用 —— inline 字面量每次 render 都是新对象，会让
-   * ActionFlowVisualization 第一个 useLayoutEffect 误以为「数据变了」从而
-   * `selectAll('*').remove()` 重建整个 SVG，造成点击 / nowTick 时所有 rect 闪烁。
+   * Stabilize `flowEndSummary` identity — inline object literals each render fooled ActionFlowVisualization’s first
+   * `useLayoutEffect` into `selectAll('*').remove()`, wiping the SVG whenever clicks/`nowTick` fired.
    */
   const flowEndSummary = useMemo(
     () => ({
@@ -459,7 +455,7 @@ export default function SubtaskCard({
     ],
   )
 
-  /** 同样原因稳化：onForkFromAction 包装的箭头函数 */
+  /** Same memo trick for fork handler identity */
   const handleForkFromActionWrapped = useMemo(() => {
     if (!onForkFromAction) return undefined
     return (act: MappedAction & { row: number }) =>
@@ -788,8 +784,8 @@ export default function SubtaskCard({
       >
         {(() => {
           /**
-           * Fork 比对模式：把灰色幽灵 + 新分支合并到一个 ActionFlowVisualization；
-           * 否则正常使用当前 session 的 flowActions。
+           * Fork compare mode feeds ghost rows + forked branch through one ActionFlowVisualization; otherwise render
+           * plain `flowActions` for the live session.
            */
           const useForkMerged = forkMergedFlow != null
           const renderActions = useForkMerged ? forkMergedFlow!.merged : flowActions
@@ -829,7 +825,7 @@ export default function SubtaskCard({
           flexShrink: 0,
         }}
       >
-        <MetricBox label="Agent Msg" value={String(m.llmCallCount)} />
+        <MetricBox label="LLM calls" value={String(m.llmCallCount)} />
         <MetricBox label="Changes" value={changesLabel} />
         <MetricBox label="Time" value={durationLabel} alert={hasLongRunningAction} />
         <MetricBox label="Total Tokens" value={String(m.tokensSegmentSum)} />
